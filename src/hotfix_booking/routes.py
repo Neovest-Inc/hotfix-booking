@@ -28,6 +28,7 @@ from .store import (
     load_bookings,
     save_bookings,
 )
+from .users import resolve_jira_user
 from .versioning import is_semver, parse_version
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,40 @@ async def field_options(request: Request) -> Any:
     except Exception as e:  # noqa: BLE001 — matches Node's broad catch
         log.error("Field options error: %s", e)
         return JSONResponse({"error": "Failed to fetch field options"}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# GET /resolve-user?email=X
+# ---------------------------------------------------------------------------
+@router.get("/resolve-user")
+async def resolve_user(
+    request: Request, email: str = Query(default="")
+) -> Any:
+    """Look up a Jira user by email and return their canonical displayName.
+
+    Used by the front-end so `bookedBy` names always match how the person
+    appears on Jira CM tickets.
+    """
+    if not email or not email.strip():
+        return JSONResponse({"error": "email is required"}, status_code=400)
+    try:
+        async with _jira(request) as jira:
+            users = await jira.search_users_by_email(email)
+    except Exception as e:  # noqa: BLE001
+        log.error("Resolve user error: %s", e)
+        return JSONResponse({"error": "Failed to look up user in Jira"}, status_code=500)
+
+    match = resolve_jira_user(email, users)
+    if match is None:
+        return JSONResponse(
+            {"error": f"No active Jira user found for {email}", "email": email},
+            status_code=404,
+        )
+    return {
+        "email": email,
+        "displayName": match["displayName"],
+        "accountId": match["accountId"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +237,7 @@ async def book(request: Request, payload: dict = Body(default_factory=dict)) -> 
     components = payload.get("components")
     client_envs = payload.get("clientEnvironments")
     booked_by = payload.get("bookedBy")
+    booked_by_email = payload.get("bookedByEmail")
 
     if not version or components is None or client_envs is None:
         return JSONResponse(
@@ -221,6 +257,26 @@ async def book(request: Request, payload: dict = Body(default_factory=dict)) -> 
             {"error": f"Invalid version format: {version!r}. Expected x.y.z (e.g. 9.97.82)."},
             status_code=400,
         )
+
+    # If the client provided an email, resolve it via Jira before proceeding.
+    # This gives us the canonical Jira displayName (matches how the person
+    # appears on CM tickets) and prevents spoofing via a fake `bookedBy` string.
+    if booked_by_email:
+        try:
+            async with _jira(request) as jira:
+                users = await jira.search_users_by_email(booked_by_email)
+        except Exception as e:  # noqa: BLE001
+            log.error("Book (user lookup) error: %s", e)
+            return JSONResponse(
+                {"error": "Failed to verify user with Jira"}, status_code=500
+            )
+        match = resolve_jira_user(booked_by_email, users)
+        if match is None:
+            return JSONResponse(
+                {"error": f"No active Jira user found for {booked_by_email}"},
+                status_code=400,
+            )
+        booked_by = match["displayName"]
 
     # Fresh-next check: the submitted version tells us which minor line the
     # user is targeting (e.g. 9.95.7 → the 9.95.x release). Query Jira for the
@@ -278,6 +334,7 @@ async def book(request: Request, payload: dict = Body(default_factory=dict)) -> 
                 components=components,
                 client_environments=client_envs,
                 booked_by=booked_by,
+                booked_by_email=booked_by_email,
             )
         except InvalidVersionError as e:
             return JSONResponse(

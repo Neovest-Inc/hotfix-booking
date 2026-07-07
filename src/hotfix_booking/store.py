@@ -102,6 +102,7 @@ def create_booking(
     components: list[str],
     client_environments: list[str],
     booked_by: str | None,
+    booked_by_email: str | None = None,
     now: Callable[[], str] = default_now,
     id_factory: Callable[[], str] = default_id_factory,
 ) -> tuple[dict, BookingsData]:
@@ -123,6 +124,7 @@ def create_booking(
         "components": components,
         "clientEnvironments": client_environments,
         "bookedBy": booked_by if booked_by else "Unknown",
+        "bookedByEmail": booked_by_email or "",
         "bookedAt": now(),
         "status": "booked",
     }

@@ -111,3 +111,26 @@ class JiraClient:
         resp.raise_for_status()
         values = (resp.json() or {}).get("values", []) or []
         return [{"id": v.get("id"), "value": v.get("value")} for v in values]
+
+    async def search_users_by_email(self, email: str) -> list[dict]:
+        """Query Jira for user records matching an email.
+
+        Jira may return multiple hits: the real user plus auxiliary service
+        accounts (accountId prefixed `qm:`, no emailAddress). Callers should
+        filter to records whose `emailAddress` matches the query email.
+        """
+        assert self._client is not None
+        resp = await self._client.get(
+            "/rest/api/3/user/search", params={"query": email}
+        )
+        resp.raise_for_status()
+        users = resp.json() or []
+        return [
+            {
+                "accountId": u.get("accountId"),
+                "displayName": u.get("displayName"),
+                "emailAddress": u.get("emailAddress"),
+                "active": u.get("active"),
+            }
+            for u in users
+        ]

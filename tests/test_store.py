@@ -78,10 +78,25 @@ class TestCreateBooking:
             "components": ["Alerts"],
             "clientEnvironments": ["CL001 - Fortress"],
             "bookedBy": "Alice",
+            "bookedByEmail": "",
             "bookedAt": "2026-07-07T12:00:00+00:00",
             "status": "booked",
         }
         assert data["bookings"] == [booking]
+
+    def test_email_is_stored_when_provided(self) -> None:
+        booking, _ = create_booking(
+            {"bookings": []},
+            version="1.2.3",
+            components=["c"],
+            client_environments=["e"],
+            booked_by="Ivan Queiroz",
+            booked_by_email="iqueiroz@neovest.com",
+            now=lambda: "T",
+            id_factory=lambda: "I",
+        )
+        assert booking["bookedBy"] == "Ivan Queiroz"
+        assert booking["bookedByEmail"] == "iqueiroz@neovest.com"
 
     def test_booked_by_defaults_to_unknown_when_falsy(self) -> None:
         for value in [None, ""]:
