@@ -591,7 +591,9 @@
     if (!bookingsListEl) return;
 
     if (bookings.length === 0) {
-      bookingsListEl.innerHTML = '<p class="hb-no-bookings">No bookings yet.</p>';
+      const label = selectedMinor !== null ? ` for 9.${selectedMinor}.x` : '';
+      bookingsListEl.innerHTML =
+        `<p class="hb-no-bookings">No pending bookings${label} yet.</p>`;
       return;
     }
 
