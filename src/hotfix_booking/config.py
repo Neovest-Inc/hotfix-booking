@@ -18,6 +18,7 @@ class Settings:
     bookings_file: Path
     client_context_id: int
     port: int
+    booking_retention_days: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -28,6 +29,7 @@ class Settings:
             bookings_file=Path(os.getenv("BOOKINGS_FILE", "./data/hotfix-bookings.json")),
             client_context_id=int(os.getenv("CLIENT_CONTEXT_ID", "14042")),
             port=int(os.getenv("PORT", "3001")),
+            booking_retention_days=int(os.getenv("BOOKING_RETENTION_DAYS", "180")),
         )
 
 

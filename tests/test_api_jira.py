@@ -164,6 +164,42 @@ class TestNextVersion:
         assert r.status_code == 500
         assert r.json() == {"error": "Failed to calculate next version"}
 
+    def test_age_based_cleanup_removes_old_bookings(
+        self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
+    ) -> None:
+        """Bookings older than the retention window are auto-removed on /next-version."""
+        from datetime import datetime, timedelta, timezone
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(200, json=load_fixture("search_deployed.json"))
+        )
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(days=200)).isoformat()   # older than 180d default
+        fresh = (now - timedelta(days=10)).isoformat()
+        write_bookings(bookings_file, [
+            {"id": "HB-OLD", "version": "9.94.50", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": old,
+             "status": "booked"},
+            {"id": "HB-FRESH", "version": "9.94.51", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": fresh,
+             "status": "booked"},
+        ])
+
+        r = client.get("/api/hotfix-booking/next-version")
+        assert r.status_code == 200
+        remaining = read_bookings(bookings_file)
+        assert [b["id"] for b in remaining] == ["HB-FRESH"]
+
+    def test_malformed_bookings_file_yields_500(
+        self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
+    ) -> None:
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(200, json=load_fixture("search_deployed.json"))
+        )
+        bookings_file.write_text("not-json{")
+        r = client.get("/api/hotfix-booking/next-version")
+        assert r.status_code == 500
+        assert "malformed" in r.json()["error"].lower()
+
 
 # ---------------------------------------------------------------------------
 # /client-versions

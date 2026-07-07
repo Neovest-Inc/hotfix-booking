@@ -1,9 +1,10 @@
 """Hotfix history: merges deployed CMs + pending bookings for a given (major, minor).
 
-Mirrors server/hotfix-booking.js `GET /history` merge logic.
+Also owns booking cleanup rules — both deploy-based and age-based.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from functools import cmp_to_key
 from typing import Any
 
@@ -142,3 +143,44 @@ def deployed_versions(deployed_cms: list[dict]) -> set[str]:
             if is_semver(v):
                 out.add(v)
     return out
+
+
+def cleanup_bookings(
+    bookings: list[dict],
+    *,
+    deployed: set[str],
+    now: datetime,
+    retention_days: int,
+) -> tuple[list[dict], list[dict]]:
+    """Partition bookings into (kept, removed).
+
+    A booking is removed if EITHER:
+      - its version is present in `deployed` (Jira has confirmed the deploy), OR
+      - its `bookedAt` is older than `now - retention_days` (abandoned)
+
+    Bookings with missing or unparseable `bookedAt` are kept (never expire from age).
+    """
+    cutoff = now - timedelta(days=retention_days)
+    kept: list[dict] = []
+    removed: list[dict] = []
+
+    for b in bookings:
+        version = b.get("version")
+        if version in deployed:
+            removed.append(b)
+            continue
+
+        booked_at_raw = b.get("bookedAt")
+        if booked_at_raw:
+            try:
+                booked_at = datetime.fromisoformat(booked_at_raw)
+                if booked_at < cutoff:
+                    removed.append(b)
+                    continue
+            except (TypeError, ValueError):
+                # Malformed timestamp — keep the booking rather than nuke it
+                pass
+
+        kept.append(b)
+
+    return kept, removed

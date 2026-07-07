@@ -1,7 +1,8 @@
-"""HTTP routes — 1:1 with server/hotfix-booking.js."""
+"""HTTP routes."""
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -11,6 +12,7 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .history import (
     calculate_next_version,
+    cleanup_bookings,
     derive_minor_versions,
     deployed_versions,
     merge_hotfixes,
@@ -19,6 +21,9 @@ from .jira_client import JiraClient
 from .matrix import build_version_matrix
 from .store import (
     AlreadyBookedError,
+    InvalidVersionError,
+    MalformedBookingsError,
+    bookings_lock,
     create_booking,
     load_bookings,
     save_bookings,
@@ -36,6 +41,13 @@ def _jira(request: Request) -> JiraClient:
     if factory is not None:
         return factory(settings)
     return JiraClient(settings)
+
+
+def _malformed_response() -> JSONResponse:
+    return JSONResponse(
+        {"error": "Bookings file is malformed. Refusing to proceed."},
+        status_code=500,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -80,25 +92,25 @@ async def next_version(request: Request) -> Any:
         log.error("Next version error: %s", e)
         return JSONResponse({"error": "Failed to calculate next version"}, status_code=500)
 
-    deployed_set = deployed_versions(cms)
+    with bookings_lock():
+        try:
+            data = load_bookings(settings.bookings_file)
+        except MalformedBookingsError:
+            return _malformed_response()
 
-    # Auto-cleanup: remove bookings that now match a deployed version
-    data = load_bookings(settings.bookings_file)
-    original_count = len(data.get("bookings", []))
-    kept = []
-    for b in data.get("bookings", []):
-        if b.get("version") in deployed_set:
-            log.info("Auto-cleanup: Removing booking %s (now deployed)", b.get("version"))
-        else:
-            kept.append(b)
-    if len(kept) < original_count:
-        data["bookings"] = kept
-        save_bookings(settings.bookings_file, data)
-        log.info(
-            "Auto-cleanup: Removed %d deployed bookings", original_count - len(kept)
+        kept, removed = cleanup_bookings(
+            data.get("bookings", []),
+            deployed=deployed_versions(cms),
+            now=datetime.now(timezone.utc),
+            retention_days=settings.booking_retention_days,
         )
-    else:
-        data["bookings"] = kept
+        if removed:
+            for b in removed:
+                log.info("Auto-cleanup: removed booking %s", b.get("version"))
+            data["bookings"] = kept
+            save_bookings(settings.bookings_file, data)
+        else:
+            data["bookings"] = kept
 
     result = calculate_next_version(cms, data.get("bookings", []))
     if result.get("nextVersion") is None:
@@ -112,7 +124,10 @@ async def next_version(request: Request) -> Any:
 @router.get("/bookings")
 def bookings() -> Any:
     settings = get_settings()
-    return load_bookings(settings.bookings_file)
+    try:
+        return load_bookings(settings.bookings_file)
+    except MalformedBookingsError:
+        return _malformed_response()
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +142,6 @@ async def book(payload: dict = Body(default_factory=dict)) -> Any:
     client_envs = payload.get("clientEnvironments")
     booked_by = payload.get("bookedBy")
 
-    # Match Node's guard order: presence check first (any missing → single message).
     if not version or components is None or client_envs is None:
         return JSONResponse(
             {"error": "Missing required fields: version, components, clientEnvironments"},
@@ -142,25 +156,36 @@ async def book(payload: dict = Body(default_factory=dict)) -> Any:
             {"error": "At least one client environment is required"}, status_code=400
         )
 
-    data = load_bookings(settings.bookings_file)
-    try:
-        new_booking, data = create_booking(
-            data,
-            version=version,
-            components=components,
-            client_environments=client_envs,
-            booked_by=booked_by,
-        )
-    except AlreadyBookedError as e:
-        return JSONResponse(
-            {"error": f"Version {e.version} is already booked", "existingBooking": e.existing},
-            status_code=409,
-        )
-    except Exception as e:  # noqa: BLE001
-        log.error("Booking error: %s", e)
-        return JSONResponse({"error": "Failed to book version"}, status_code=500)
+    with bookings_lock():
+        try:
+            data = load_bookings(settings.bookings_file)
+        except MalformedBookingsError:
+            return _malformed_response()
 
-    save_bookings(settings.bookings_file, data)
+        try:
+            new_booking, data = create_booking(
+                data,
+                version=version,
+                components=components,
+                client_environments=client_envs,
+                booked_by=booked_by,
+            )
+        except InvalidVersionError as e:
+            return JSONResponse(
+                {"error": f"Invalid version format: {e}. Expected x.y.z (e.g. 9.97.82)."},
+                status_code=400,
+            )
+        except AlreadyBookedError as e:
+            return JSONResponse(
+                {"error": f"Version {e.version} is already booked", "existingBooking": e.existing},
+                status_code=409,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.error("Booking error: %s", e)
+            return JSONResponse({"error": "Failed to book version"}, status_code=500)
+
+        save_bookings(settings.bookings_file, data)
+
     return {"success": True, "booking": new_booking}
 
 
@@ -199,7 +224,10 @@ async def history(
         log.error("Hotfix history error: %s", e)
         return JSONResponse({"error": "Failed to fetch hotfix history"}, status_code=500)
 
-    booking_data = load_bookings(settings.bookings_file)
+    try:
+        booking_data = load_bookings(settings.bookings_file)
+    except MalformedBookingsError:
+        return _malformed_response()
     hotfixes = merge_hotfixes(
         version_cms, booking_data.get("bookings", []), major=major, target_minor=target_minor
     )

@@ -135,3 +135,44 @@ class TestPostBook:
         assert len(after) == 2
         assert after[0]["version"] == "9.94.10"
         assert after[1]["version"] == "9.94.19"
+
+    @pytest.mark.parametrize(
+        "bad_version",
+        ["1.2", "1.2.3.4", "1.2.a", "v1.2.3", "latest"],
+    )
+    def test_invalid_version_format_returns_400(
+        self, client: TestClient, bad_version: str
+    ) -> None:
+        payload = {**self._valid, "version": bad_version}
+        r = client.post("/api/hotfix-booking/book", json=payload)
+        assert r.status_code == 400
+        assert "x.y.z" in r.json()["error"]
+
+
+class TestMalformedBookingsFile:
+    """When the JSON store is corrupted, endpoints must surface an error
+    instead of silently returning an empty state (which would mask data loss)."""
+
+    def _corrupt(self, path: Path) -> None:
+        path.write_text("not-valid-json{{{")
+
+    def test_bookings_endpoint_returns_500(
+        self, client: TestClient, bookings_file: Path
+    ) -> None:
+        self._corrupt(bookings_file)
+        r = client.get("/api/hotfix-booking/bookings")
+        assert r.status_code == 500
+        assert "malformed" in r.json()["error"].lower()
+
+    def test_book_endpoint_returns_500_and_does_not_overwrite(
+        self, client: TestClient, bookings_file: Path
+    ) -> None:
+        self._corrupt(bookings_file)
+        r = client.post("/api/hotfix-booking/book", json={
+            "version": "9.94.19",
+            "components": ["A"],
+            "clientEnvironments": ["CL"],
+        })
+        assert r.status_code == 500
+        # File was NOT rewritten (still corrupt) — data preserved for recovery
+        assert bookings_file.read_text() == "not-valid-json{{{"

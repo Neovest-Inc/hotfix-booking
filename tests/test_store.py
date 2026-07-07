@@ -1,10 +1,14 @@
 import json
+import threading
 from pathlib import Path
 
 import pytest
 
 from hotfix_booking.store import (
     AlreadyBookedError,
+    InvalidVersionError,
+    MalformedBookingsError,
+    bookings_lock,
     create_booking,
     load_bookings,
     save_bookings,
@@ -20,14 +24,16 @@ class TestLoadBookings:
         f.write_text(json.dumps({"bookings": [{"id": "HB-1", "version": "9.92.1"}]}))
         assert load_bookings(f) == {"bookings": [{"id": "HB-1", "version": "9.92.1"}]}
 
-    def test_malformed_json_returns_default_and_logs(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    def test_malformed_json_raises_not_silently_returns_empty(
+        self, tmp_path: Path
     ) -> None:
+        # Regression: previously we silently returned {"bookings": []} on parse errors,
+        # which could mask data loss. Now we raise so callers surface the error.
         f = tmp_path / "b.json"
         f.write_text("not-json{")
-        with caplog.at_level("ERROR"):
-            assert load_bookings(f) == {"bookings": []}
-        assert any("Error loading bookings" in r.message for r in caplog.records)
+        with pytest.raises(MalformedBookingsError) as exc:
+            load_bookings(f)
+        assert str(f) in str(exc.value)
 
 
 class TestSaveBookings:
@@ -130,3 +136,56 @@ class TestCreateBooking:
             id_factory=lambda: "I",
         )
         assert data["bookings"][0]["version"] == "1.2.3"
+
+    @pytest.mark.parametrize(
+        "bad_version",
+        ["", "1.2", "1.2.3.4", "1.2.a", "v1.2.3", "latest", " 1.2.3", None],
+    )
+    def test_invalid_version_format_rejected(self, bad_version) -> None:
+        data = {"bookings": []}
+        with pytest.raises(InvalidVersionError):
+            create_booking(
+                data,
+                version=bad_version,
+                components=["c"],
+                client_environments=["e"],
+                booked_by="a",
+            )
+        # Nothing added on failure
+        assert data["bookings"] == []
+
+
+class TestBookingsLock:
+    """The lock lets concurrent read-modify-write cycles complete without losing data."""
+
+    def _worker(self, path: Path, version: str) -> None:
+        with bookings_lock():
+            data = load_bookings(path)
+            create_booking(
+                data,
+                version=version,
+                components=["c"],
+                client_environments=["e"],
+                booked_by="a",
+                now=lambda: "T",
+                id_factory=lambda: f"HB-{version}",
+            )
+            save_bookings(path, data)
+
+    def test_concurrent_bookings_all_persist(self, tmp_path: Path) -> None:
+        f = tmp_path / "b.json"
+        save_bookings(f, {"bookings": []})
+
+        threads = [
+            threading.Thread(target=self._worker, args=(f, f"9.99.{i}"))
+            for i in range(20)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        stored = load_bookings(f)
+        versions = {b["version"] for b in stored["bookings"]}
+        assert versions == {f"9.99.{i}" for i in range(20)}
+        assert len(stored["bookings"]) == 20

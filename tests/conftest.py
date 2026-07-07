@@ -38,6 +38,7 @@ def settings(bookings_file: Path) -> Settings:
         bookings_file=bookings_file,
         client_context_id=14042,
         port=3001,
+        booking_retention_days=180,
     )
     reset_settings_for_tests(s)
     return s
