@@ -35,6 +35,51 @@ class TestGetBookings:
         assert r.status_code == 200
         assert r.json()["bookings"][0]["version"] == "9.92.1"
 
+    def test_minor_filter_returns_only_matching(
+        self, client: TestClient, bookings_file: Path
+    ) -> None:
+        """?minor=X&major=Y filters the returned list to bookings on that release line."""
+        write_bookings(bookings_file, [
+            {"id": "HB-A", "version": "9.95.10", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": "T", "status": "booked"},
+            {"id": "HB-B", "version": "9.95.11", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": "T", "status": "booked"},
+            {"id": "HB-C", "version": "9.97.20", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": "T", "status": "booked"},
+            {"id": "HB-D", "version": "8.95.10", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": "T", "status": "booked"},
+        ])
+        r = client.get("/api/hotfix-booking/bookings?minor=95&major=9")
+        assert r.status_code == 200
+        ids = [b["id"] for b in r.json()["bookings"]]
+        assert ids == ["HB-A", "HB-B"]
+
+    def test_minor_filter_ignores_non_semver_bookings(
+        self, client: TestClient, bookings_file: Path
+    ) -> None:
+        write_bookings(bookings_file, [
+            {"id": "HB-A", "version": "9.95.10", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": "T", "status": "booked"},
+            {"id": "HB-BAD", "version": "not-semver", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": "T", "status": "booked"},
+        ])
+        r = client.get("/api/hotfix-booking/bookings?minor=95")
+        assert r.status_code == 200
+        assert [b["id"] for b in r.json()["bookings"]] == ["HB-A"]
+
+    def test_major_defaults_to_9_when_only_minor_provided(
+        self, client: TestClient, bookings_file: Path
+    ) -> None:
+        write_bookings(bookings_file, [
+            {"id": "HB-9", "version": "9.95.10", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": "T", "status": "booked"},
+            {"id": "HB-8", "version": "8.95.10", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U", "bookedAt": "T", "status": "booked"},
+        ])
+        r = client.get("/api/hotfix-booking/bookings?minor=95")
+        assert r.status_code == 200
+        assert [b["id"] for b in r.json()["bookings"]] == ["HB-9"]
+
 
 class TestPostBook:
     """POST /book re-checks Jira on every request to make sure the version

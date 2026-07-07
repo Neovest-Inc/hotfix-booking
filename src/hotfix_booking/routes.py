@@ -157,12 +157,29 @@ async def next_version(
 # GET /bookings
 # ---------------------------------------------------------------------------
 @router.get("/bookings")
-def bookings() -> Any:
+def bookings(
+    minor: int | None = Query(default=None),
+    major: int = Query(default=9),
+) -> Any:
+    """Return pending bookings. With `?minor=X` filters to that release line."""
     settings = get_settings()
     try:
-        return load_bookings(settings.bookings_file)
+        data = load_bookings(settings.bookings_file)
     except MalformedBookingsError:
         return _malformed_response()
+
+    if minor is not None:
+        filtered = []
+        for b in data.get("bookings", []):
+            v = b.get("version", "")
+            if not is_semver(v):
+                continue
+            p = parse_version(v)
+            if p.major == major and p.minor == minor:
+                filtered.append(b)
+        return {"bookings": filtered}
+
+    return data
 
 
 # ---------------------------------------------------------------------------

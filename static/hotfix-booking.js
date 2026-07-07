@@ -179,6 +179,7 @@
       bookMinorSelect.addEventListener('change', () => {
         selectedMinor = bookMinorSelect.value ? parseInt(bookMinorSelect.value, 10) : null;
         loadNextVersion();
+        loadBookings();
       });
     }
 
@@ -542,6 +543,12 @@
           bookMinorSelect.appendChild(opt);
         });
         bookMinorOptionsLoaded = true;
+        // Now that we know the effective minor, lock it in so the bookings
+        // list stays in sync with the badge.
+        if (selectedMinor === null && typeof data.minor === 'number') {
+          selectedMinor = data.minor;
+          loadBookings();
+        }
       }
 
       if (data.error && !data.nextVersion) {
@@ -561,11 +568,15 @@
   }
 
   /**
-   * Load existing bookings
+   * Load existing bookings for the currently-selected release line
+   * (or all bookings if no release is selected).
    */
   async function loadBookings() {
     try {
-      const response = await fetch('/api/hotfix-booking/bookings');
+      const url = selectedMinor !== null
+        ? `/api/hotfix-booking/bookings?minor=${selectedMinor}`
+        : '/api/hotfix-booking/bookings';
+      const response = await fetch(url);
       const data = await response.json();
       renderBookingsList(data.bookings || []);
     } catch (error) {
