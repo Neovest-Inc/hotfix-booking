@@ -105,7 +105,11 @@ async def next_version(
     filter_requested = major is not None and minor is not None
     try:
         async with _jira(request) as jira:
-            recent_cms = await jira.fetch_deployed_cms(deployed_only=True)
+            # Fetch ALL recent CMs (any status) so the release dropdown
+            # includes lines that only have in-progress hotfixes (e.g. a fresh
+            # 9.98 line where nothing has deployed yet). Deployed-only CMs
+            # get partitioned in memory below for the max-version calc + cleanup.
+            recent_cms = await jira.fetch_deployed_cms(deployed_only=False)
             filtered_cms: list[dict] | None = None
             if filter_requested:
                 filtered_cms = await jira.fetch_cms_by_version(major, minor)

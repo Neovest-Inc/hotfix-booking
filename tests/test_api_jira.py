@@ -219,6 +219,50 @@ class TestNextVersion:
         assert body["minor"] == 94
         assert [(m["major"], m["minor"]) for m in body["minorVersions"]] == [(9, 94), (9, 92)]
 
+    def test_dropdown_includes_lines_with_only_in_progress_cms(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        """A release line that only has 'Open' / 'In Progress' CMs (no deploys yet)
+        must still appear in the release dropdown — otherwise users can't book against
+        a brand-new release that's actively being worked on."""
+        all_issues = [
+            {"key": "CM-1", "fields": {
+                "summary": "s", "status": {"name": "Deployment Completed"},
+                "components": [{"name": "A"}],
+                "fixVersions": [{"name": "9.94.5"}],
+                "customfield_13235": [], "customfield_10751": None,
+                "reporter": {"displayName": "R"}}},
+            # In-Progress 9.98.1 — no deploys for 9.98 yet
+            {"key": "CM-2", "fields": {
+                "summary": "s", "status": {"name": "Open"},
+                "components": [{"name": "A"}],
+                "fixVersions": [{"name": "9.98.1"}],
+                "customfield_13235": [], "customfield_10751": None,
+                "reporter": {"displayName": "R"}}},
+        ]
+
+        # Simulate Jira's server-side JQL filter: a query with the
+        # status-filter clause returns ONLY the deployed CMs.
+        def _responder(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content or b"{}")
+            jql = body.get("jql", "")
+            if 'status in ("Deployment Completed", "Done")' in jql:
+                deployed = [i for i in all_issues
+                            if i["fields"]["status"]["name"] in ("Deployment Completed", "Done")]
+                return httpx.Response(200, json={"issues": deployed})
+            return httpx.Response(200, json={"issues": all_issues})
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_responder)
+
+        r = client.get("/api/hotfix-booking/next-version")
+        assert r.status_code == 200
+        body = r.json()
+        # Both lines discovered; 9.98 is highest (current).
+        assert body["currentMajor"] == 9
+        assert body["currentMinor"] == 98
+        pairs = [(m["major"], m["minor"]) for m in body["minorVersions"]]
+        assert (9, 98) in pairs
+        assert (9, 94) in pairs
+
     def test_minor_query_filters_to_that_minor(
         self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
     ) -> None:
