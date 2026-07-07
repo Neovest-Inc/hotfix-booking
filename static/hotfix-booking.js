@@ -157,6 +157,19 @@
       bookBtn.addEventListener('click', bookHotfix);
     }
 
+    // Expand / collapse the +N more toggles in the Recent Hotfixes list.
+    if (bookingsListEl) {
+      bookingsListEl.addEventListener('click', (e) => {
+        const btn = e.target.closest('.hb-tags-toggle');
+        if (!btn) return;
+        const container = btn.closest('.hb-collapsible-tags');
+        if (!container) return;
+        const collapse = btn.dataset.action === 'collapse';
+        container.querySelector('.hb-tags-collapsed').style.display = collapse ? '' : 'none';
+        container.querySelector('.hb-tags-expanded').style.display = collapse ? 'none' : '';
+      });
+    }
+
     // Refresh matrix button
     if (refreshMatrixBtn) {
       refreshMatrixBtn.addEventListener('click', loadVersionMatrix);
@@ -625,19 +638,40 @@
               ${date ? Utils.escapeHtml(formatDate(date)) : ''}${by ? ' &middot; ' + Utils.escapeHtml(by) : ''}
             </span>
           </div>
-          ${components.length ? `
-            <div class="hb-booking-tags">
-              ${components.slice(0, 3).map(c => `<span class="hb-tag hb-component-tag">${Utils.escapeHtml(c)}</span>`).join('')}
-              ${components.length > 3 ? `<span class="hb-tag hb-more-tag">+${components.length - 3} more</span>` : ''}
-            </div>` : ''}
-          ${clients.length ? `
-            <div class="hb-booking-tags">
-              ${clients.slice(0, 3).map(c => `<span class="hb-tag hb-client-tag">${Utils.escapeHtml(c)}</span>`).join('')}
-              ${clients.length > 3 ? `<span class="hb-tag hb-more-tag">+${clients.length - 3} more</span>` : ''}
-            </div>` : ''}
+          ${renderExpandableTags(components, 'component')}
+          ${renderExpandableTags(clients, 'client')}
         </div>
       `;
     }).join('');
+  }
+
+  /**
+   * Render a horizontally-wrapping list of tags with an inline "+N more" toggle
+   * that expands to show every item, and a "Show less" toggle that collapses back.
+   */
+  function renderExpandableTags(items, type) {
+    if (!items || items.length === 0) return '';
+    const tagClass = type === 'component' ? 'hb-component-tag' : 'hb-client-tag';
+    const renderTag = v =>
+      `<span class="hb-tag ${tagClass}">${Utils.escapeHtml(v)}</span>`;
+    const collapsedTags = items.slice(0, 3).map(renderTag).join('');
+    const allTags = items.map(renderTag).join('');
+    const extra = items.length - 3;
+    if (extra <= 0) {
+      return `<div class="hb-booking-tags">${collapsedTags}</div>`;
+    }
+    return `
+      <div class="hb-booking-tags hb-collapsible-tags">
+        <div class="hb-tags-collapsed">
+          ${collapsedTags}
+          <button type="button" class="hb-tag hb-more-tag hb-tags-toggle" data-action="expand">+${extra} more</button>
+        </div>
+        <div class="hb-tags-expanded" style="display: none;">
+          ${allTags}
+          <button type="button" class="hb-tag hb-more-tag hb-tags-toggle" data-action="collapse">Show less</button>
+        </div>
+      </div>
+    `;
   }
 
   /**

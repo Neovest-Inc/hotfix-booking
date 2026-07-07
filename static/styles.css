@@ -3209,6 +3209,23 @@ body {
   color: #5f6368;
 }
 
+/* Interactive "+N more" / "Show less" pill inside a Recent Hotfixes tag row. */
+.hb-tags-toggle {
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+.hb-tags-toggle:hover {
+  background: #e0e2e5;
+  color: #202124;
+}
+.hb-tags-collapsed,
+.hb-tags-expanded {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .hb-booking-meta {
   display: flex;
   gap: 16px;
