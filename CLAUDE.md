@@ -90,8 +90,9 @@ These are the app's current behaviors. Some are limitations, some are deliberate
 
 - No authentication on any endpoint
 - `bookedBy` is hard-coded to `"Dashboard User"` by the front-end
-- No file lock on the bookings JSON — concurrent POSTs could theoretically lose data
-- Auto-cleanup of stale bookings runs as a side effect of `GET /next-version`
+- Booking auto-cleanup runs as a side effect of `GET /next-version` (both deploy-based and age-based, threshold `BOOKING_RETENTION_DAYS`, default 180)
+- Concurrency: writes are serialized by a `threading.Lock` in `store.py`, which is safe for a single uvicorn worker. Multi-worker deployments would need an OS-level file lock (`filelock` package) — swap the `bookings_lock()` implementation in `store.py`
+- All user-facing timestamps in the UI are shown in Eastern Time (`America/New_York`) and suffixed with " ET"
 
 ## Common pitfalls
 

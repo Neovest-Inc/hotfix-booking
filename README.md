@@ -66,9 +66,11 @@ Do this before any release, and any time something feels off. Once the app is de
 
 ## Known limits
 
-- Two people booking the *same* version at the exact same second could overwrite each other. Very unlikely in practice.
 - Every booking is attributed to "Dashboard User" — there's no login yet.
 - No history of who booked what beyond what's in the bookings file.
+
+Abandoned bookings (booked but never made it to Jira as a CM) are auto-removed
+after 180 days by default. Tune via `BOOKING_RETENTION_DAYS` in `.env`.
 
 If any of these become a real problem they can be addressed. Ask before changing user-visible behavior.
 
