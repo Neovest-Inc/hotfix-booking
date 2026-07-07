@@ -227,6 +227,8 @@
    * - Restores previously-verified email + name from localStorage on load.
    * - Resolves the email via Jira on blur / Enter and displays the real name.
    * - Book Hotfix button is disabled until a name is resolved.
+   * - On a first visit with no stored user, pops a blocking modal so the app
+   *   can't be used anonymously.
    */
   function initUserBox() {
     const emailEl = document.getElementById('hbUserEmail');
@@ -242,6 +244,7 @@
       showResolvedUser(statusEl, emailEl, clearBtn);
     } else {
       updateBookButtonState();
+      openUserModal();
     }
 
     async function tryResolve() {
@@ -250,26 +253,18 @@
       if (email === userEmail && userName) return;   // already resolved
       statusEl.textContent = 'Looking up…';
       statusEl.className = 'hb-user-hint';
-      try {
-        const r = await fetch(`/api/hotfix-booking/resolve-user?email=${encodeURIComponent(email)}`);
-        const data = await r.json();
-        if (r.status === 200 && data.displayName) {
-          userEmail = data.email;
-          userName = data.displayName;
-          localStorage.setItem(USER_EMAIL_KEY, userEmail);
-          localStorage.setItem(USER_NAME_KEY, userName);
-          showResolvedUser(statusEl, emailEl, clearBtn);
-        } else {
-          statusEl.textContent = data.error || 'User not found in Jira';
-          statusEl.className = 'hb-user-error';
-          userEmail = '';
-          userName = '';
-          updateBookButtonState();
-        }
-      } catch (e) {
-        console.error('User resolve failed:', e);
-        statusEl.textContent = 'Failed to reach Jira';
+      const result = await resolveEmail(email);
+      if (result.ok) {
+        userEmail = result.email;
+        userName = result.displayName;
+        localStorage.setItem(USER_EMAIL_KEY, userEmail);
+        localStorage.setItem(USER_NAME_KEY, userName);
+        showResolvedUser(statusEl, emailEl, clearBtn);
+      } else {
+        statusEl.textContent = result.error || 'User not found in Jira';
         statusEl.className = 'hb-user-error';
+        userEmail = '';
+        userName = '';
         updateBookButtonState();
       }
     }
@@ -297,6 +292,73 @@
         updateBookButtonState();
       });
     }
+  }
+
+  /**
+   * Shared email → { ok, email, displayName } | { ok:false, error } resolver.
+   */
+  async function resolveEmail(email) {
+    try {
+      const r = await fetch(`/api/hotfix-booking/resolve-user?email=${encodeURIComponent(email)}`);
+      const data = await r.json();
+      if (r.status === 200 && data.displayName) {
+        return { ok: true, email: data.email, displayName: data.displayName };
+      }
+      return { ok: false, error: data.error || 'User not found in Jira' };
+    } catch (e) {
+      console.error('User resolve failed:', e);
+      return { ok: false, error: 'Failed to reach Jira' };
+    }
+  }
+
+  /**
+   * Blocking first-visit modal. Only way past is a successful email resolve.
+   */
+  function openUserModal() {
+    const overlay = document.getElementById('hbUserModal');
+    const emailEl = document.getElementById('hbModalEmail');
+    const submitBtn = document.getElementById('hbModalSubmit');
+    const errorEl = document.getElementById('hbModalError');
+    const headerEmailEl = document.getElementById('hbUserEmail');
+    const headerStatusEl = document.getElementById('hbUserStatus');
+    const headerClearBtn = document.getElementById('hbUserClear');
+    if (!overlay || !emailEl || !submitBtn) return;
+
+    overlay.style.display = 'flex';
+    setTimeout(() => emailEl.focus(), 0);
+    errorEl.textContent = '';
+
+    async function submit() {
+      const email = emailEl.value.trim();
+      if (!email) {
+        errorEl.textContent = 'Please enter your email.';
+        return;
+      }
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Looking up…';
+      errorEl.textContent = '';
+      const result = await resolveEmail(email);
+      if (result.ok) {
+        userEmail = result.email;
+        userName = result.displayName;
+        localStorage.setItem(USER_EMAIL_KEY, userEmail);
+        localStorage.setItem(USER_NAME_KEY, userName);
+        overlay.style.display = 'none';
+        showResolvedUser(headerStatusEl, headerEmailEl, headerClearBtn);
+      } else {
+        errorEl.textContent = result.error;
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Continue';
+      }
+    }
+
+    submitBtn.onclick = submit;
+    emailEl.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      }
+    };
   }
 
   function showResolvedUser(statusEl, emailEl, clearBtn) {
