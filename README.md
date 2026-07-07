@@ -38,11 +38,8 @@ The live fixtures go stale — Jira changes as CMs are raised/deployed. Re-captu
 them from the real Jira, then re-run the suite:
 
 ```powershell
-# 1. Recapture fresh Jira responses (needs val-dashboard next to this repo,
-#    and val-dashboard/.env populated with Jira creds).
-cd ..\val-dashboard
-node tools\capture-hotfix-fixtures.js
-cd ..\hotfix-booking
+# 1. Recapture fresh Jira responses (uses this project's own .env — no external deps)
+python tools\capture_hotfix_fixtures.py
 
 # 2. Run all tests
 pytest

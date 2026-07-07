@@ -27,6 +27,10 @@ env/
 data/*
 !data/.gitkeep
 
+# Real Jira fixtures for live/integration tests contain PII
+# (ticket summaries, reporter names, client env names). Keep them local only.
+tests/fixtures/jira-live/
+
 # IDE
 .vscode/
 .idea/
