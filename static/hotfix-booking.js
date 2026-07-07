@@ -176,10 +176,14 @@
 
     // Book Hotfix: release-line selector (lets users book against previous minors)
     if (bookMinorSelect) {
-      bookMinorSelect.addEventListener('change', () => {
+      bookMinorSelect.addEventListener('change', async () => {
         selectedMinor = bookMinorSelect.value ? parseInt(bookMinorSelect.value, 10) : null;
-        loadNextVersion();
-        loadBookings();
+        showLoading(true);
+        try {
+          await Promise.all([loadNextVersion(), loadBookings()]);
+        } finally {
+          showLoading(false);
+        }
       });
     }
 
@@ -293,11 +297,20 @@
   /**
    * Called when tab is shown
    */
-  function onTabShow() {
+  async function onTabShow() {
     if (!fieldOptionsLoaded) {
-      loadFieldOptions();
-      loadNextVersion();
-      loadBookings();
+      showLoading(true);
+      try {
+        // Load all three in parallel — spinner stays up until they all finish
+        // so the user sees a clear "working" state during the initial wait.
+        await Promise.all([
+          loadFieldOptions(),
+          loadNextVersion(),
+          loadBookings(),
+        ]);
+      } finally {
+        showLoading(false);
+      }
     }
     // Book view is the default view — kick off auto-refresh.
     if (bookView && bookView.style.display !== 'none') {
@@ -346,7 +359,6 @@
    * Load field options (components and clients) from API
    */
   async function loadFieldOptions() {
-    showLoading(true);
     try {
       const response = await fetch('/api/hotfix-booking/field-options');
       const data = await response.json();
@@ -364,8 +376,6 @@
       fieldOptionsLoaded = true;
     } catch (error) {
       console.error('Failed to load field options:', error);
-    } finally {
-      showLoading(false);
     }
   }
 
