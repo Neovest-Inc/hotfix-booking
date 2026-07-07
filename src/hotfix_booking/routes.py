@@ -28,6 +28,7 @@ from .store import (
     load_bookings,
     save_bookings,
 )
+from .versioning import is_semver
 
 log = logging.getLogger(__name__)
 
@@ -134,7 +135,7 @@ def bookings() -> Any:
 # POST /book
 # ---------------------------------------------------------------------------
 @router.post("/book")
-async def book(payload: dict = Body(default_factory=dict)) -> Any:
+async def book(request: Request, payload: dict = Body(default_factory=dict)) -> Any:
     settings = get_settings()
 
     version = payload.get("version")
@@ -155,12 +156,45 @@ async def book(payload: dict = Body(default_factory=dict)) -> Any:
         return JSONResponse(
             {"error": "At least one client environment is required"}, status_code=400
         )
+    if not is_semver(version):
+        return JSONResponse(
+            {"error": f"Invalid version format: {version!r}. Expected x.y.z (e.g. 9.97.82)."},
+            status_code=400,
+        )
+
+    # Fresh-next check: re-fetch Jira on every book to guard against stale UI state.
+    try:
+        async with _jira(request) as jira:
+            cms = await jira.fetch_deployed_cms(deployed_only=True)
+    except Exception as e:  # noqa: BLE001
+        log.error("Book (jira fetch) error: %s", e)
+        return JSONResponse(
+            {"error": "Failed to verify next version against Jira"}, status_code=500
+        )
 
     with bookings_lock():
         try:
             data = load_bookings(settings.bookings_file)
         except MalformedBookingsError:
             return _malformed_response()
+
+        current = calculate_next_version(cms, data.get("bookings", []))
+        if current.get("nextVersion") is None:
+            return JSONResponse(
+                {"error": "No deployed versions in Jira; cannot determine next version."},
+                status_code=409,
+            )
+        if version != current["nextVersion"]:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Version {version} is no longer the next available. "
+                        f"Current next is {current['nextVersion']}."
+                    ),
+                    "currentNext": current["nextVersion"],
+                },
+                status_code=409,
+            )
 
         try:
             new_booking, data = create_booking(
@@ -176,6 +210,7 @@ async def book(payload: dict = Body(default_factory=dict)) -> Any:
                 status_code=400,
             )
         except AlreadyBookedError as e:
+            # Defense in depth — the fresh-next check above should already have caught this.
             return JSONResponse(
                 {"error": f"Version {e.version} is already booked", "existingBooking": e.existing},
                 status_code=409,

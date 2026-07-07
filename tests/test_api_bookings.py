@@ -1,12 +1,14 @@
-"""Tests for /bookings and /book (no Jira interaction)."""
+"""Tests for /bookings and /book (Jira mocked minimally where needed)."""
 from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
-from tests.conftest import read_bookings, write_bookings
+from tests.conftest import load_fixture, read_bookings, write_bookings
 
 
 def test_health(client: TestClient) -> None:
@@ -35,29 +37,43 @@ class TestGetBookings:
 
 
 class TestPostBook:
+    """POST /book re-checks Jira on every request to make sure the version
+    the user is trying to book is still the current next available.
+
+    The `search_deployed.json` fixture has max deployed = 9.94.22, so the
+    fresh-computed next is 9.94.23 unless a test writes a booking that bumps it.
+    """
+
     _valid = {
-        "version": "9.94.19",
+        "version": "9.94.23",
         "components": ["Alerts"],
         "clientEnvironments": ["CL001 - Fortress"],
         "bookedBy": "Alice",
     }
 
+    @pytest.fixture(autouse=True)
+    def _stub_jira(self, mock_jira: respx.MockRouter) -> respx.MockRouter:
+        """Default Jira stub used by every /book test — max deployed = 9.94.22."""
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(200, json=load_fixture("search_deployed.json"))
+        )
+        return mock_jira
+
     def test_success_writes_file_and_returns_booking(
         self, client: TestClient, bookings_file: Path
     ) -> None:
         r = client.post("/api/hotfix-booking/book", json=self._valid)
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
         body = r.json()
         assert body["success"] is True
         booking = body["booking"]
-        assert booking["version"] == "9.94.19"
+        assert booking["version"] == "9.94.23"
         assert booking["components"] == ["Alerts"]
         assert booking["clientEnvironments"] == ["CL001 - Fortress"]
         assert booking["bookedBy"] == "Alice"
         assert booking["status"] == "booked"
         assert booking["id"].startswith("HB-")
-        assert booking["bookedAt"]  # ISO 8601 timestamp
-        # File was written
+        assert booking["bookedAt"]
         assert read_bookings(bookings_file) == [booking]
 
     def test_booked_by_defaults_to_unknown(
@@ -66,7 +82,7 @@ class TestPostBook:
         payload = {**self._valid}
         payload.pop("bookedBy")
         r = client.post("/api/hotfix-booking/book", json=payload)
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
         assert r.json()["booking"]["bookedBy"] == "Unknown"
 
     @pytest.mark.parametrize(
@@ -100,42 +116,6 @@ class TestPostBook:
         assert r.status_code == 400
         assert r.json() == {"error": "At least one client environment is required"}
 
-    def test_duplicate_version_returns_409_with_existing(
-        self, client: TestClient, bookings_file: Path
-    ) -> None:
-        existing = {
-            "id": "HB-existing",
-            "version": "9.94.19",
-            "components": ["X"],
-            "clientEnvironments": ["CL999"],
-            "bookedBy": "First",
-            "bookedAt": "2026-01-01T00:00:00Z",
-            "status": "booked",
-        }
-        write_bookings(bookings_file, [existing])
-        r = client.post("/api/hotfix-booking/book", json=self._valid)
-        assert r.status_code == 409
-        body = r.json()
-        assert body["error"] == "Version 9.94.19 is already booked"
-        assert body["existingBooking"] == existing
-        # File unchanged
-        assert read_bookings(bookings_file) == [existing]
-
-    def test_appends_to_existing_bookings(
-        self, client: TestClient, bookings_file: Path
-    ) -> None:
-        write_bookings(bookings_file, [
-            {"id": "HB-1", "version": "9.94.10", "components": ["A"],
-             "clientEnvironments": ["CL001"], "bookedBy": "U", "bookedAt": "T",
-             "status": "booked"}
-        ])
-        r = client.post("/api/hotfix-booking/book", json=self._valid)
-        assert r.status_code == 200
-        after = read_bookings(bookings_file)
-        assert len(after) == 2
-        assert after[0]["version"] == "9.94.10"
-        assert after[1]["version"] == "9.94.19"
-
     @pytest.mark.parametrize(
         "bad_version",
         ["1.2", "1.2.3.4", "1.2.a", "v1.2.3", "latest"],
@@ -147,6 +127,70 @@ class TestPostBook:
         r = client.post("/api/hotfix-booking/book", json=payload)
         assert r.status_code == 400
         assert "x.y.z" in r.json()["error"]
+
+    def test_appends_to_existing_bookings(
+        self, client: TestClient, bookings_file: Path
+    ) -> None:
+        # Pre-existing booking bumps next-version from 9.94.23 to 9.94.24.
+        write_bookings(bookings_file, [
+            {"id": "HB-1", "version": "9.94.23", "components": ["A"],
+             "clientEnvironments": ["CL001"], "bookedBy": "U",
+             "bookedAt": "2026-07-01T00:00:00+00:00",
+             "status": "booked"}
+        ])
+        payload = {**self._valid, "version": "9.94.24"}
+        r = client.post("/api/hotfix-booking/book", json=payload)
+        assert r.status_code == 200, r.text
+        after = read_bookings(bookings_file)
+        assert [b["version"] for b in after] == ["9.94.23", "9.94.24"]
+
+    # ------------------------------------------------------------------
+    # Fresh-next-version check (protects against stale UI state)
+    # ------------------------------------------------------------------
+    def test_rejects_stale_version_lower_than_current_next(
+        self, client: TestClient
+    ) -> None:
+        # Fresh next is 9.94.23; user is trying to book 9.94.20 (already deployed in fixture).
+        payload = {**self._valid, "version": "9.94.20"}
+        r = client.post("/api/hotfix-booking/book", json=payload)
+        assert r.status_code == 409
+        body = r.json()
+        assert body["currentNext"] == "9.94.23"
+        assert "9.94.20" in body["error"]
+        assert "9.94.23" in body["error"]
+
+    def test_rejects_version_ahead_of_current_next(
+        self, client: TestClient
+    ) -> None:
+        # Fresh next is 9.94.23; user submits 9.94.99.
+        payload = {**self._valid, "version": "9.94.99"}
+        r = client.post("/api/hotfix-booking/book", json=payload)
+        assert r.status_code == 409
+        assert r.json()["currentNext"] == "9.94.23"
+
+    def test_rejects_when_stale_because_someone_else_booked(
+        self, client: TestClient, bookings_file: Path
+    ) -> None:
+        # Between the user seeing 9.94.23 and clicking Book, someone else booked 9.94.23.
+        # New fresh-next is 9.94.24. User's submission of 9.94.23 must be rejected.
+        write_bookings(bookings_file, [
+            {"id": "HB-first", "version": "9.94.23", "components": ["X"],
+             "clientEnvironments": ["Y"], "bookedBy": "Z",
+             "bookedAt": "2026-07-01T00:00:00+00:00", "status": "booked"},
+        ])
+        r = client.post("/api/hotfix-booking/book", json=self._valid)  # version 9.94.23
+        assert r.status_code == 409
+        assert r.json()["currentNext"] == "9.94.24"
+
+    def test_jira_down_during_book_yields_500(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        # Override the autouse stub with a failure response.
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(503)
+        )
+        r = client.post("/api/hotfix-booking/book", json=self._valid)
+        assert r.status_code == 500
 
 
 class TestMalformedBookingsFile:
@@ -165,14 +209,17 @@ class TestMalformedBookingsFile:
         assert "malformed" in r.json()["error"].lower()
 
     def test_book_endpoint_returns_500_and_does_not_overwrite(
-        self, client: TestClient, bookings_file: Path
+        self, client: TestClient, bookings_file: Path, mock_jira: respx.MockRouter
     ) -> None:
+        # /book hits Jira first, so we need a mock even for the malformed-file case.
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(200, json=load_fixture("search_deployed.json"))
+        )
         self._corrupt(bookings_file)
         r = client.post("/api/hotfix-booking/book", json={
-            "version": "9.94.19",
+            "version": "9.94.23",
             "components": ["A"],
             "clientEnvironments": ["CL"],
         })
         assert r.status_code == 500
-        # File was NOT rewritten (still corrupt) — data preserved for recovery
         assert bookings_file.read_text() == "not-valid-json{{{"
