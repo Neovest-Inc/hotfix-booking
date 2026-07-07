@@ -19,6 +19,12 @@
   let availableClients = [];
   let jiraBaseUrl = '';
 
+  // The signed-in user (resolved via Jira email lookup, cached in localStorage).
+  let userEmail = '';
+  let userName = '';
+  const USER_EMAIL_KEY = 'hotfixBooking.userEmail';
+  const USER_NAME_KEY = 'hotfixBooking.userName';
+
   // Show the latest N hotfixes in the Recent Hotfixes feed, and offer at most
   // N minor lines in the release dropdown.
   const RECENT_HOTFIXES_COUNT = 8;
@@ -210,7 +216,107 @@
       });
     }
 
+    // "Booking as:" user email + resolved-name display.
+    initUserBox();
+
     initialized = true;
+  }
+
+  /**
+   * Wire up the header "Booking as:" area.
+   * - Restores previously-verified email + name from localStorage on load.
+   * - Resolves the email via Jira on blur / Enter and displays the real name.
+   * - Book Hotfix button is disabled until a name is resolved.
+   */
+  function initUserBox() {
+    const emailEl = document.getElementById('hbUserEmail');
+    const statusEl = document.getElementById('hbUserStatus');
+    const clearBtn = document.getElementById('hbUserClear');
+    if (!emailEl || !statusEl) return;
+
+    const storedEmail = localStorage.getItem(USER_EMAIL_KEY) || '';
+    const storedName = localStorage.getItem(USER_NAME_KEY) || '';
+    if (storedEmail && storedName) {
+      userEmail = storedEmail;
+      userName = storedName;
+      showResolvedUser(statusEl, emailEl, clearBtn);
+    } else {
+      updateBookButtonState();
+    }
+
+    async function tryResolve() {
+      const email = emailEl.value.trim();
+      if (!email) return;
+      if (email === userEmail && userName) return;   // already resolved
+      statusEl.textContent = 'Looking up…';
+      statusEl.className = 'hb-user-hint';
+      try {
+        const r = await fetch(`/api/hotfix-booking/resolve-user?email=${encodeURIComponent(email)}`);
+        const data = await r.json();
+        if (r.status === 200 && data.displayName) {
+          userEmail = data.email;
+          userName = data.displayName;
+          localStorage.setItem(USER_EMAIL_KEY, userEmail);
+          localStorage.setItem(USER_NAME_KEY, userName);
+          showResolvedUser(statusEl, emailEl, clearBtn);
+        } else {
+          statusEl.textContent = data.error || 'User not found in Jira';
+          statusEl.className = 'hb-user-error';
+          userEmail = '';
+          userName = '';
+          updateBookButtonState();
+        }
+      } catch (e) {
+        console.error('User resolve failed:', e);
+        statusEl.textContent = 'Failed to reach Jira';
+        statusEl.className = 'hb-user-error';
+        updateBookButtonState();
+      }
+    }
+
+    emailEl.addEventListener('blur', tryResolve);
+    emailEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        emailEl.blur();
+      }
+    });
+
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        userEmail = '';
+        userName = '';
+        localStorage.removeItem(USER_EMAIL_KEY);
+        localStorage.removeItem(USER_NAME_KEY);
+        emailEl.value = '';
+        emailEl.style.display = '';
+        emailEl.focus();
+        clearBtn.style.display = 'none';
+        statusEl.textContent = 'Booking as:';
+        statusEl.className = 'hb-user-hint';
+        updateBookButtonState();
+      });
+    }
+  }
+
+  function showResolvedUser(statusEl, emailEl, clearBtn) {
+    statusEl.innerHTML = `Booking as: <span class="hb-user-name">${Utils.escapeHtml(userName)}</span>`;
+    statusEl.className = 'hb-user-hint';
+    emailEl.value = userEmail;
+    emailEl.style.display = 'none';
+    if (clearBtn) clearBtn.style.display = '';
+    updateBookButtonState();
+  }
+
+  function updateBookButtonState() {
+    if (!bookBtn) return;
+    if (!userName) {
+      bookBtn.disabled = true;
+      bookBtn.title = 'Enter your Neovest email above before booking';
+    } else {
+      bookBtn.disabled = false;
+      bookBtn.title = '';
+    }
   }
 
   /**
@@ -727,6 +833,11 @@
       return;
     }
 
+    if (!userEmail || !userName) {
+      Utils.showToast('Enter your Neovest email at the top of the page first.', 'warning');
+      return;
+    }
+
     bookBtn.disabled = true;
     bookBtn.innerHTML = '<span class="material-icons">hourglass_empty</span> Booking...';
 
@@ -740,7 +851,7 @@
           version: nextVersion,
           components: selectedComponents,
           clientEnvironments: selectedClients,
-          bookedBy: 'Dashboard User' // Could be enhanced with actual user info
+          bookedByEmail: userEmail
         })
       });
 
@@ -785,8 +896,8 @@
       console.error('Booking failed:', error);
       Utils.showToast('Failed to book hotfix version. Please try again.', 'error');
     } finally {
-      bookBtn.disabled = false;
       bookBtn.innerHTML = '<span class="material-icons">book_online</span> Book Hotfix Version';
+      updateBookButtonState();
     }
   }
 

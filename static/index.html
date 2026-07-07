@@ -6,7 +6,7 @@
   <title>Hotfix Booking</title>
   <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=6">
+  <link rel="stylesheet" href="/styles.css?v=7">
   <style>
     /* Minimal shell overrides so the standalone page fills the viewport
        without depending on the dashboard's outer layout. */
@@ -16,6 +16,7 @@
       background: #fff;
       border-bottom: 1px solid #e0e0e0;
       padding: 12px 24px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
     }
     .app-header h1 {
       margin: 0;
@@ -24,11 +25,33 @@
       color: #1a73e8;
       display: flex; align-items: center; gap: 8px;
     }
+    .hb-user-box {
+      display: flex; align-items: center; gap: 8px;
+      font-family: 'Roboto', sans-serif; font-size: 13px;
+    }
+    .hb-user-box input {
+      padding: 6px 10px; border: 1px solid #dadce0; border-radius: 6px;
+      font-family: inherit; font-size: 13px; width: 220px;
+    }
+    .hb-user-box input:focus { outline: none; border-color: #1a73e8; }
+    .hb-user-box .hb-user-name { color: #202124; font-weight: 500; }
+    .hb-user-box .hb-user-hint { color: #5f6368; }
+    .hb-user-box .hb-user-error { color: #d93025; font-weight: 500; }
+    .hb-user-box .hb-user-clear {
+      background: none; border: none; color: #5f6368; cursor: pointer;
+      font-size: 12px; text-decoration: underline;
+    }
+    .hb-user-box .hb-user-clear:hover { color: #202124; }
   </style>
 </head>
 <body>
   <header class="app-header">
     <h1><span class="material-icons">book_online</span> Hotfix Booking</h1>
+    <div class="hb-user-box" id="hbUserBox">
+      <span id="hbUserStatus" class="hb-user-hint">Booking as:</span>
+      <input type="email" id="hbUserEmail" placeholder="your.email@neovest.com" autocomplete="email">
+      <button type="button" id="hbUserClear" class="hb-user-clear" style="display:none;">change</button>
+    </div>
   </header>
 
   <main class="main-content">
@@ -147,8 +170,8 @@
     </div>
   </main>
 
-  <script src="/utils.js?v=6"></script>
-  <script src="/hotfix-booking.js?v=6"></script>
+  <script src="/utils.js?v=7"></script>
+  <script src="/hotfix-booking.js?v=7"></script>
   <script>
     // Standalone bootstrap — the original dashboard called these on tab-show;
     // here we only have one tab, so run both on DOMContentLoaded.
