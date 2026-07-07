@@ -134,6 +134,46 @@ class TestCalculateNextVersion:
         assert result["currentHighest"] == "9.92.10"
 
 
+class TestCalculateNextVersionWithMinorFilter:
+    """When given `major` + `minor`, only versions on that specific minor line count."""
+
+    def test_filter_isolates_specific_minor(self) -> None:
+        cms = [
+            _cm("CM-1", ["9.97.5"]),
+            _cm("CM-2", ["9.95.3"]),
+            _cm("CM-3", ["9.95.7"]),
+        ]
+        result = calculate_next_version(cms, [], major=9, minor=95)
+        assert result["currentHighest"] == "9.95.7"
+        assert result["nextVersion"] == "9.95.8"
+        assert result["baseVersion"] == "9.95.0"
+
+    def test_bookings_filtered_by_same_minor(self) -> None:
+        cms = [_cm("CM-1", ["9.95.3"])]
+        bookings = [_booking("9.95.5"), _booking("9.97.10")]
+        result = calculate_next_version(cms, bookings, major=9, minor=95)
+        assert result["nextVersion"] == "9.95.6"
+
+    def test_no_matches_for_minor_returns_specific_error(self) -> None:
+        cms = [_cm("CM-1", ["9.97.5"])]
+        result = calculate_next_version(cms, [], major=9, minor=95)
+        assert result["nextVersion"] is None
+        assert "9.95" in result["error"]
+
+    def test_bookings_alone_are_enough_for_the_minor(self) -> None:
+        # No deployed CMs for 9.95 but a booking exists — should still compute next.
+        cms = [_cm("CM-1", ["9.97.5"])]
+        bookings = [_booking("9.95.2")]
+        result = calculate_next_version(cms, bookings, major=9, minor=95)
+        assert result["nextVersion"] == "9.95.3"
+
+    def test_major_also_respected(self) -> None:
+        cms = [_cm("CM-1", ["8.95.10"]), _cm("CM-2", ["9.95.3"])]
+        result = calculate_next_version(cms, [], major=9, minor=95)
+        # 8.95.10 must not be considered when major=9
+        assert result["currentHighest"] == "9.95.3"
+
+
 class TestDeployedVersions:
     def test_returns_semver_set(self) -> None:
         cms = [

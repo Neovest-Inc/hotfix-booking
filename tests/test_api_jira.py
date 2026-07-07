@@ -108,11 +108,10 @@ class TestNextVersion:
 
         r = client.get("/api/hotfix-booking/next-version")
         assert r.status_code == 200
-        assert r.json() == {
-            "currentHighest": "9.94.30",
-            "nextVersion": "9.94.31",
-            "baseVersion": "9.94.0",
-        }
+        body = r.json()
+        assert body["currentHighest"] == "9.94.30"
+        assert body["nextVersion"] == "9.94.31"
+        assert body["baseVersion"] == "9.94.0"
 
     def test_uses_deployed_when_no_bookings(
         self, client: TestClient, mock_jira: respx.MockRouter
@@ -154,7 +153,9 @@ class TestNextVersion:
         )
         r = client.get("/api/hotfix-booking/next-version")
         assert r.status_code == 200
-        assert r.json() == {"nextVersion": None, "error": "No deployed versions found."}
+        body = r.json()
+        assert body["nextVersion"] is None
+        assert body["error"] == "No deployed versions found."
 
     def test_jira_error_yields_500(
         self, client: TestClient, mock_jira: respx.MockRouter
@@ -199,6 +200,96 @@ class TestNextVersion:
         r = client.get("/api/hotfix-booking/next-version")
         assert r.status_code == 500
         assert "malformed" in r.json()["error"].lower()
+
+    def test_response_includes_minor_versions_for_dropdown(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        """The Book Hotfix UI populates its release dropdown from this response,
+        so /next-version must include the last-5 minor versions and currentMinor."""
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(200, json=load_fixture("search_deployed.json"))
+        )
+        r = client.get("/api/hotfix-booking/next-version")
+        assert r.status_code == 200
+        body = r.json()
+        # Deployed fixture has max 9.94.22, so currentMinor = 94
+        assert body["currentMinor"] == 94
+        assert body["major"] == 9
+        assert body["minor"] == 94
+        # 5 minor versions, latest first
+        assert [m["minor"] for m in body["minorVersions"]] == [94, 93, 92, 91, 90]
+
+    def test_minor_query_filters_to_that_minor(
+        self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
+    ) -> None:
+        """?minor=X uses the by-version Jira query (no 100-day cap) and returns
+        the next hotfix for THAT specific minor."""
+        def _responder(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content or b"{}")
+            jql = body.get("jql", "")
+            if "fixVersion" in jql:
+                return httpx.Response(
+                    200, json=load_fixture("search_by_version_9_92.json")
+                )
+            return httpx.Response(200, json=load_fixture("search_deployed.json"))
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_responder)
+
+        # search_by_version_9_92 fixture max is 9.92.86 → next should be 9.92.87
+        r = client.get("/api/hotfix-booking/next-version?minor=92")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["nextVersion"] == "9.92.87"
+        assert body["currentHighest"] == "9.92.86"
+        assert body["minor"] == 92
+        assert body["major"] == 9
+        # currentMinor (94) is different from the requested minor (92)
+        assert body["currentMinor"] == 94
+
+    def test_minor_query_counts_bookings_for_that_minor_only(
+        self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
+    ) -> None:
+        def _responder(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content or b"{}")
+            if "fixVersion" in body.get("jql", ""):
+                return httpx.Response(
+                    200, json=load_fixture("search_by_version_9_92.json")
+                )
+            return httpx.Response(200, json=load_fixture("search_deployed.json"))
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_responder)
+
+        # A pending booking for 9.92.87 should bump the next to 9.92.88.
+        # Bookings for other minors (9.94.x) must be ignored for this query.
+        write_bookings(bookings_file, [
+            {"id": "HB-92", "version": "9.92.87", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U",
+             "bookedAt": "2026-07-01T00:00:00+00:00", "status": "booked"},
+            {"id": "HB-94", "version": "9.94.99", "components": ["A"],
+             "clientEnvironments": ["CL"], "bookedBy": "U",
+             "bookedAt": "2026-07-01T00:00:00+00:00", "status": "booked"},
+        ])
+        r = client.get("/api/hotfix-booking/next-version?minor=92")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["nextVersion"] == "9.92.88"
+
+    def test_minor_query_with_no_matching_data_returns_error(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        def _responder(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content or b"{}")
+            if "fixVersion" in body.get("jql", ""):
+                return httpx.Response(200, json={"issues": []})
+            return httpx.Response(200, json=load_fixture("search_deployed.json"))
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_responder)
+
+        r = client.get("/api/hotfix-booking/next-version?minor=80")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["nextVersion"] is None
+        assert "9.80" in body["error"]
+        # Dropdown data still present so the UI stays usable
+        assert body["currentMinor"] == 94
+        assert isinstance(body["minorVersions"], list)
 
 
 # ---------------------------------------------------------------------------

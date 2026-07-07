@@ -192,6 +192,51 @@ class TestPostBook:
         r = client.post("/api/hotfix-booking/book", json=self._valid)
         assert r.status_code == 500
 
+    # ------------------------------------------------------------------
+    # Booking for previous minor releases (release-picker feature)
+    # ------------------------------------------------------------------
+    def _mixed_responder(self, request: httpx.Request) -> httpx.Response:
+        """Return the 9.92 by-version fixture when the JQL targets 9.92, else the
+        general deployed fixture (which also contains 9.94.x entries)."""
+        import json as _json
+        body = _json.loads(request.content or b"{}")
+        jql = body.get("jql", "")
+        if "9.92" in jql:
+            return httpx.Response(200, json=load_fixture("search_by_version_9_92.json"))
+        return httpx.Response(200, json=load_fixture("search_deployed.json"))
+
+    def test_book_valid_next_for_previous_minor(
+        self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
+    ) -> None:
+        """The by-version fixture for 9.92 has max 9.92.86, so 9.92.87 is the
+        legit next hotfix for the 9.92.x release line."""
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=self._mixed_responder)
+        payload = {**self._valid, "version": "9.92.87"}
+        r = client.post("/api/hotfix-booking/book", json=payload)
+        assert r.status_code == 200, r.text
+        assert r.json()["booking"]["version"] == "9.92.87"
+
+    def test_book_wrong_version_for_previous_minor_returns_409(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        """Attempting to book a stale/wrong version for 9.92.x must be rejected
+        with the correct current-next for 9.92, not for the current release."""
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=self._mixed_responder)
+        payload = {**self._valid, "version": "9.92.50"}   # wrong; next is 9.92.87
+        r = client.post("/api/hotfix-booking/book", json=payload)
+        assert r.status_code == 409
+        assert r.json()["currentNext"] == "9.92.87"
+
+    def test_book_current_release_still_works(
+        self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
+    ) -> None:
+        """Sanity: booking a hotfix for the *current* release doesn't hit
+        the by-version code path (no ?minor= implied) and still works."""
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=self._mixed_responder)
+        # Current is 9.94.22 → next is 9.94.23
+        r = client.post("/api/hotfix-booking/book", json=self._valid)  # version 9.94.23
+        assert r.status_code == 200, r.text
+
 
 class TestMalformedBookingsFile:
     """When the JSON store is corrupted, endpoints must surface an error

@@ -103,26 +103,50 @@ def merge_hotfixes(
 
 
 def calculate_next_version(
-    deployed_cms: list[dict], remaining_bookings: list[dict]
+    deployed_cms: list[dict],
+    remaining_bookings: list[dict],
+    *,
+    major: int | None = None,
+    minor: int | None = None,
 ) -> dict[str, Any]:
-    """Compute { currentHighest, nextVersion, baseVersion } or { nextVersion: None, error }.
+    """Compute the next available hotfix version.
 
-    Node reference:
-        allVersions = deployed fixVersions (semver) + remaining booking versions (semver)
-        highest = sort(allVersions).pop()
-        next = `${major}.${minor}.${patch+1}`
+    Without `major`/`minor` (default) → considers every semver across all deployed
+    CMs and pending bookings, returns max+1 patch bump. This is the "current
+    release line" case (max of everything).
+
+    With `major` and `minor` → filters both deployed and booked to that specific
+    minor line, e.g. `major=9, minor=95` → only 9.95.x counts. Lets users book
+    hotfixes for previous minor releases.
+
+    Returns { currentHighest, nextVersion, baseVersion } or { nextVersion: None, error }.
     """
+    filtered = major is not None and minor is not None
+
+    def _matches(v: str) -> bool:
+        if not is_semver(v):
+            return False
+        if not filtered:
+            return True
+        parsed = parse_version(v)
+        return parsed.major == major and parsed.minor == minor
+
     all_versions: list[str] = []
     for cm in deployed_cms:
         for v in cm.get("fixVersions", []) or []:
-            if is_semver(v):
+            if _matches(v):
                 all_versions.append(v)
     for b in remaining_bookings:
         v = b.get("version", "")
-        if is_semver(v):
+        if _matches(v):
             all_versions.append(v)
 
     if not all_versions:
+        if filtered:
+            return {
+                "nextVersion": None,
+                "error": f"No deployed versions found for {major}.{minor}.x.",
+            }
         return {"nextVersion": None, "error": "No deployed versions found."}
 
     all_versions.sort(key=cmp_to_key(compare_versions))

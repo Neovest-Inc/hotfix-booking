@@ -28,7 +28,7 @@ from .store import (
     load_bookings,
     save_bookings,
 )
-from .versioning import is_semver
+from .versioning import is_semver, parse_version
 
 log = logging.getLogger(__name__)
 
@@ -84,14 +84,33 @@ async def deployed_cms(request: Request) -> Any:
 # GET /next-version  (with auto-cleanup side effect)
 # ---------------------------------------------------------------------------
 @router.get("/next-version")
-async def next_version(request: Request) -> Any:
+async def next_version(
+    request: Request,
+    minor: int | None = Query(default=None),
+    major: int = Query(default=9),
+) -> Any:
+    """Compute the next available hotfix version.
+
+    - Without `?minor=` → uses last-100-day deployed CMs; returns the next hotfix
+      for whichever minor line is currently highest (default use case).
+    - With `?minor=X` → also queries Jira for the full history of `major.minor.*`
+      (no 100-day cap) so users can book hotfixes for older, still-supported minors.
+
+    Response always includes `currentMinor` and `minorVersions` so the front-end
+    can populate its release-selector dropdown from a single call.
+    """
     settings = get_settings()
     try:
         async with _jira(request) as jira:
-            cms = await jira.fetch_deployed_cms(deployed_only=True)
+            recent_cms = await jira.fetch_deployed_cms(deployed_only=True)
+            filtered_cms: list[dict] | None = None
+            if minor is not None:
+                filtered_cms = await jira.fetch_cms_by_version(major, minor)
     except Exception as e:  # noqa: BLE001
         log.error("Next version error: %s", e)
         return JSONResponse({"error": "Failed to calculate next version"}, status_code=500)
+
+    current_minor, minor_versions = derive_minor_versions(recent_cms, major=major)
 
     with bookings_lock():
         try:
@@ -99,9 +118,11 @@ async def next_version(request: Request) -> Any:
         except MalformedBookingsError:
             return _malformed_response()
 
+        # Auto-cleanup runs on the deploy-based (recent) view regardless of
+        # whether a minor filter was supplied — keeps housekeeping consistent.
         kept, removed = cleanup_bookings(
             data.get("bookings", []),
-            deployed=deployed_versions(cms),
+            deployed=deployed_versions(recent_cms),
             now=datetime.now(timezone.utc),
             retention_days=settings.booking_retention_days,
         )
@@ -113,10 +134,23 @@ async def next_version(request: Request) -> Any:
         else:
             data["bookings"] = kept
 
-    result = calculate_next_version(cms, data.get("bookings", []))
-    if result.get("nextVersion") is None:
-        return {"nextVersion": None, "error": result.get("error")}
-    return result
+    effective_minor = minor if minor is not None else current_minor
+    cms_for_calc = filtered_cms if filtered_cms is not None else recent_cms
+    result = calculate_next_version(
+        cms_for_calc,
+        data.get("bookings", []),
+        major=major if minor is not None else None,
+        minor=minor,
+    )
+
+    response: dict[str, Any] = {
+        "major": major,
+        "minor": effective_minor,
+        "currentMinor": current_minor,
+        "minorVersions": minor_versions,
+    }
+    response.update(result)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +196,14 @@ async def book(request: Request, payload: dict = Body(default_factory=dict)) -> 
             status_code=400,
         )
 
-    # Fresh-next check: re-fetch Jira on every book to guard against stale UI state.
+    # Fresh-next check: the submitted version tells us which minor line the
+    # user is targeting (e.g. 9.95.7 → the 9.95.x release). Query Jira for the
+    # full history of that specific minor (no 100-day cap) so hotfixes for
+    # older, still-supported minors work.
+    parsed = parse_version(version)
     try:
         async with _jira(request) as jira:
-            cms = await jira.fetch_deployed_cms(deployed_only=True)
+            cms = await jira.fetch_cms_by_version(parsed.major, parsed.minor)
     except Exception as e:  # noqa: BLE001
         log.error("Book (jira fetch) error: %s", e)
         return JSONResponse(
@@ -178,18 +216,29 @@ async def book(request: Request, payload: dict = Body(default_factory=dict)) -> 
         except MalformedBookingsError:
             return _malformed_response()
 
-        current = calculate_next_version(cms, data.get("bookings", []))
+        current = calculate_next_version(
+            cms,
+            data.get("bookings", []),
+            major=parsed.major,
+            minor=parsed.minor,
+        )
         if current.get("nextVersion") is None:
             return JSONResponse(
-                {"error": "No deployed versions in Jira; cannot determine next version."},
+                {
+                    "error": (
+                        f"No prior hotfixes found for {parsed.major}.{parsed.minor}.x "
+                        "in Jira; cannot determine next version."
+                    ),
+                },
                 status_code=409,
             )
         if version != current["nextVersion"]:
             return JSONResponse(
                 {
                     "error": (
-                        f"Version {version} is no longer the next available. "
-                        f"Current next is {current['nextVersion']}."
+                        f"Version {version} is no longer the next available for "
+                        f"{parsed.major}.{parsed.minor}.x. Current next is "
+                        f"{current['nextVersion']}."
                     ),
                     "currentNext": current["nextVersion"],
                 },
