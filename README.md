@@ -2,6 +2,14 @@
 
 A small internal web app that helps the team coordinate hotfix releases across clients and components. It reads live data from Jira, shows it in three useful views, and lets you reserve the next available hotfix version number so two people don't accidentally pick the same one.
 
+## Signing in
+
+On your first visit you'll see a small pop-up: **Who's booking?** Enter your Neovest email once. The app looks it up in Jira and remembers your display name (the same name Jira shows you under on CM tickets), so every booking you make is attributed to you correctly.
+
+- Remembered in **your browser** (`localStorage`) across close/reopen. No login server, no cookies, no session.
+- Different browsers or a private window will prompt you again.
+- The **change** link in the top-right lets you switch accounts.
+
 ## What can users do with it?
 
 Open the app in a browser and you'll see three tabs:
@@ -10,7 +18,7 @@ Open the app in a browser and you'll see three tabs:
 - Pick a **release line** (e.g. `9.98.x`, `9.97.x`, or even an older one like `9.93.x`) from the top dropdown. It auto-populates with the most recent active release lines from Jira, up to 8 of them, and when a new major arrives (e.g. `10.0.x`) it shows up there automatically.
 - The **Next Available Version** badge shows the next hotfix number for that release line, calculated from what's already deployed in Jira plus what other people have already booked in this app.
 - Pick one or more **components** and one or more **client environments** from searchable dropdowns.
-- Click **Book Hotfix Version** to reserve that number for your work.
+- Click **Book Hotfix Version** to reserve that number for your work. The booking is attributed to whoever you signed in as.
 - **Recent Hotfixes** (below the form) shows the 8 latest hotfixes for the selected release — a mix of what's already deployed and what's currently booked, with expandable tag lists for long component/client lists. This refreshes automatically every 30 seconds while the tab is visible.
 
 ### 2. Version Matrix
@@ -21,10 +29,11 @@ A filterable table of every hotfix for a given release (up to 8 recent release l
 
 ## How does it work?
 
-- **Front-end**: a single static HTML/CSS/JavaScript page served from `/`.
+- **Front-end**: a single static HTML/CSS/JavaScript page served from `/`. First-visit modal blocks booking until you've identified yourself.
 - **Back-end**: Python (FastAPI) that talks to Jira on demand. Every screen refresh re-queries Jira for fresh data — nothing is cached.
 - **Storage**: bookings are saved to a small JSON file at `data/hotfix-bookings.json`. Everything else lives in Jira.
-- **No database, no login, no external services beyond Jira** — deliberately minimal.
+- **User identity**: your email + resolved Jira name are stored **in your browser** (`localStorage`), not on our server. When you book, both are baked into that booking's record for auditability. Names on bookings always match the canonical Jira `displayName` (the server resolves what you typed against Jira, ignoring anything the browser might have modified).
+- **No database, no login server, no external services beyond Jira** — deliberately minimal.
 
 Bookings clean themselves up automatically two ways:
 - **Deploy-based**: once Jira shows a booked version has actually been deployed, the app removes it from the local file on the next screen refresh.
@@ -59,7 +68,7 @@ pytest              # runs the full suite in about 10 seconds
 
 There are two kinds of tests:
 
-- **139 hermetic tests** — fast, deterministic, no internet needed. These cover every function and every HTTP endpoint against small hand-crafted test data.
+- **158 hermetic tests** — fast, deterministic, no internet needed. These cover every function and every HTTP endpoint against small hand-crafted test data.
 - **8 "canary" tests** — parse *real* Jira responses to catch any change Atlassian might make to Jira's API. They skip themselves if no real data has been captured yet.
 
 To refresh the canary against current Jira and re-run:
@@ -73,8 +82,8 @@ Do this before any release, and any time something feels off. Once the app is de
 
 ## Known limits
 
-- Every booking is attributed to `"Dashboard User"` — there's no login yet.
-- No history of who booked what beyond what's currently in the bookings file.
+- **User identity is self-declared**: someone determined to could enter a teammate's email and their bookings would look like the teammate's. Low risk in practice; would be fixed by moving to real Jira OAuth if the concern ever bites.
+- **Shared-computer risk**: on a shared workstation, whoever set the email last stays signed in for subsequent people until they click "change". Fine on individual laptops.
 - Runs as a single uvicorn worker by default. If you ever scale to multi-worker, the in-process file lock needs to be swapped for an OS-level file lock (see the note in `store.py`).
 
 If any of these become a real problem they can be addressed. Ask before changing user-visible behavior.
