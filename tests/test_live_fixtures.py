@@ -9,7 +9,7 @@ These tests are less strict than the unit tests — they don't assert exact valu
 
 Regenerate the fixtures with:
 
-    node tools/capture-hotfix-fixtures.js   # from the val-dashboard repo
+    python tools/capture_hotfix_fixtures.py
 
 Skips itself gracefully if `tests/fixtures/jira-live/` isn't present.
 """

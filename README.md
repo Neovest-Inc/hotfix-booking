@@ -64,13 +64,13 @@ pytest
 
 Do this before any release, and any time something feels off. Once the app is deployed to a shared server, this should run nightly on that server.
 
-## Known limits (intentional — mirrors the Node predecessor)
+## Known limits
 
 - Two people booking the *same* version at the exact same second could overwrite each other. Very unlikely in practice.
 - Every booking is attributed to "Dashboard User" — there's no login yet.
 - No history of who booked what beyond what's in the bookings file.
 
-If any of these become a real problem they can be addressed, but the current app deliberately behaves the same way as the original.
+If any of these become a real problem they can be addressed. Ask before changing user-visible behavior.
 
 ## Project layout
 

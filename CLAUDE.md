@@ -1,6 +1,6 @@
 # Instructions for coding agents
 
-You are working on `hotfix-booking` — a standalone Python (FastAPI) service that replaced a Node/Express feature from the `val-dashboard` project. Follow these rules unconditionally unless the user explicitly says otherwise.
+You are working on `hotfix-booking` — a standalone Python (FastAPI) service that helps coordinate hotfix versions across clients and components using data from Jira. Follow these rules unconditionally unless the user explicitly says otherwise.
 
 ## Golden rules
 
@@ -12,15 +12,13 @@ You are working on `hotfix-booking` — a standalone Python (FastAPI) service th
    - Run `pytest` — confirm the full suite is still green
    - Never commit unless the full suite passes
 
-2. **Strict behavioral parity with the Node original.** This app was ported from `val-dashboard` (Node/Express) to match its behavior exactly, including known quirks (listed below). Do not "improve" behavior without explicit user approval. If you notice something that looks wrong, flag it and wait — do not fix.
+2. **Ask before destructive or hard-to-reverse actions.** Rewriting git history, force-pushing, deleting files that aren't part of the current task, changing external interfaces, adding scheduled tasks — always confirm first.
 
-3. **Ask before destructive or hard-to-reverse actions.** Rewriting git history, force-pushing, deleting files that aren't part of the current task, changing external interfaces, adding scheduled tasks — always confirm first.
+3. **Do not add dependencies without approval.** Current runtime: `fastapi`, `uvicorn`, `httpx`, `python-dotenv`. Dev: `pytest`, `pytest-asyncio`, `respx`. New packages need a real justification.
 
-4. **Do not add dependencies without approval.** Current runtime: `fastapi`, `uvicorn`, `httpx`, `python-dotenv`. Dev: `pytest`, `pytest-asyncio`, `respx`. New packages need a real justification.
+4. **Do not reformat unrelated code, add speculative comments, or add docstrings to code you didn't change.** Follow the existing style.
 
-5. **Do not reformat unrelated code, add speculative comments, or add docstrings to code you didn't change.** Follow the existing style.
-
-6. **The user is often a Product Manager, not a developer.** Explain in plain language, avoid jargon, and translate technical trade-offs into business terms.
+5. **The user is often a Product Manager, not a developer.** Explain in plain language, avoid jargon, and translate technical trade-offs into business terms.
 
 ## Tech stack
 
@@ -28,7 +26,7 @@ You are working on `hotfix-booking` — a standalone Python (FastAPI) service th
 - FastAPI + uvicorn (web framework + server)
 - httpx (Jira HTTP client, also used by tests as the ASGI transport)
 - pytest + respx (tests + HTTP mocking)
-- Vanilla JS/HTML/CSS front-end (copied verbatim from the Node original — do not rewrite)
+- Vanilla JS/HTML/CSS front-end (no build step, no framework)
 
 ## Project layout
 
@@ -51,7 +49,6 @@ tests/
   conftest.py          Shared fixtures: bookings_file, settings, client, mock_jira
 tools/
   capture_hotfix_fixtures.py   Refreshes tests/fixtures/jira-live/
-  side_by_side_diff.py         Diffs this app's JSON against the Node original
   smoke.py                     Quick sanity check without full test run
 ```
 
@@ -87,9 +84,9 @@ All under `/api/hotfix-booking`:
 | GET  | `/client-versions` | Client × component version matrix |
 | GET  | `/history`         | Merged deployed + booked list for a given minor version |
 
-## Intentionally-preserved quirks (do NOT "fix" without approval)
+## Current known behaviors — ask before changing
 
-These mirror the Node original.
+These are the app's current behaviors. Some are limitations, some are deliberate. If you spot one and think it should change, propose it and wait for approval — do not fix silently.
 
 - No authentication on any endpoint
 - `bookedBy` is hard-coded to `"Dashboard User"` by the front-end
@@ -99,8 +96,6 @@ These mirror the Node original.
 ## Common pitfalls
 
 - **Do not overwrite `tests/fixtures/jira/` with real Jira data.** Those files are hand-crafted synthetic fixtures, and the hermetic tests assert exact values from them. Real Jira data belongs in `tests/fixtures/jira-live/`.
-- **The front-end is a verbatim copy** from the Node predecessor. Do not modernize (React, bundlers, framework migration, etc.) without a very good reason and explicit approval.
-- **Timestamps** are Python-native ISO 8601 with microsecond precision. This deliberately differs from the Node original's millisecond format. Documented and accepted — do not "fix".
 - **When tests fail, read them.** Test names are descriptive and reveal the intended behavior.
 - **`data/hotfix-bookings.json` is git-ignored** (per `.gitignore` — `data/*` except `.gitkeep`). Don't commit it.
 

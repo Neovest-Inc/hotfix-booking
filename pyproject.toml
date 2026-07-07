@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hotfix-booking"
 version = "0.1.0"
-description = "HotFix Booking service ported from the val-dashboard Node app."
+description = "HotFix Booking service — coordinate hotfix versions across clients and components using Jira data."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111",

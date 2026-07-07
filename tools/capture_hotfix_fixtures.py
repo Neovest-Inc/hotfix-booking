@@ -1,8 +1,6 @@
 """Capture raw Jira responses into tests/fixtures/jira-live/.
 
-This is the Python-native replacement for the old Node capture script.
-Uses the same Jira credentials the FastAPI app uses (from .env), so the
-`hotfix-booking` project has no dependency on the val-dashboard repo.
+Uses the Jira credentials from `.env` (same ones the FastAPI app uses).
 
 Usage:
     python tools/capture_hotfix_fixtures.py
