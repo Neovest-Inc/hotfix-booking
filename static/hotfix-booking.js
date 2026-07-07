@@ -568,58 +568,66 @@
   }
 
   /**
-   * Load existing bookings for the currently-selected release line
-   * (or all bookings if no release is selected).
+   * Load the 5 most recent hotfixes for the selected release line —
+   * a merged view of already-deployed CMs (from Jira) and pending
+   * bookings from the local store. Only makes the call once we know
+   * which release to filter by.
    */
   async function loadBookings() {
+    if (selectedMinor === null) return;   // wait until loadNextVersion sets it
     try {
-      const url = selectedMinor !== null
-        ? `/api/hotfix-booking/bookings?minor=${selectedMinor}`
-        : '/api/hotfix-booking/bookings';
+      const url = `/api/hotfix-booking/history?minor=${selectedMinor}&major=9`;
       const response = await fetch(url);
       const data = await response.json();
-      renderBookingsList(data.bookings || []);
+      renderRecentHotfixes(data.hotfixes || []);
     } catch (error) {
-      console.error('Failed to load bookings:', error);
+      console.error('Failed to load recent hotfixes:', error);
     }
   }
 
   /**
-   * Render bookings list
+   * Compact list of the 5 latest hotfixes (deployed + booked, mixed).
    */
-  function renderBookingsList(bookings) {
+  function renderRecentHotfixes(hotfixes) {
     if (!bookingsListEl) return;
 
-    if (bookings.length === 0) {
+    if (hotfixes.length === 0) {
       const label = selectedMinor !== null ? ` for 9.${selectedMinor}.x` : '';
       bookingsListEl.innerHTML =
-        `<p class="hb-no-bookings">No pending bookings${label} yet.</p>`;
+        `<p class="hb-no-bookings">No recent hotfixes${label} yet.</p>`;
       return;
     }
 
-    // Sort by most recent first
-    const sorted = [...bookings].sort((a, b) => 
-      new Date(b.bookedAt) - new Date(a.bookedAt)
-    );
-
-    bookingsListEl.innerHTML = sorted.slice(0, 10).map(booking => `
-      <div class="hb-booking-item">
-        <div class="hb-booking-version">${Utils.escapeHtml(booking.version)}</div>
-        <div class="hb-booking-details">
-          <div class="hb-booking-tags">
-            ${booking.components.map(c => `<span class="hb-tag hb-component-tag">${Utils.escapeHtml(c)}</span>`).join('')}
+    const top5 = hotfixes.slice(0, 5);
+    bookingsListEl.innerHTML = top5.map(hf => {
+      const date = hf.deployedAt || hf.bookedAt || '';
+      const by = hf.reporter || hf.bookedBy || '';
+      const statusLabel = hf.type === 'deployed' ? (hf.status || 'Deployed') : 'Booked';
+      const statusClass = getStatusClass(statusLabel);
+      const clients = hf.clientEnvironments || [];
+      const components = hf.components || [];
+      return `
+        <div class="hb-booking-item">
+          <div class="hb-booking-version">
+            ${Utils.escapeHtml(hf.version)}
+            <span class="cm-status ${statusClass}" style="margin-left: 6px; font-size: 0.75em; vertical-align: middle;">${Utils.escapeHtml(statusLabel)}</span>
           </div>
-          <div class="hb-booking-tags">
-            ${booking.clientEnvironments.slice(0, 3).map(c => `<span class="hb-tag hb-client-tag">${Utils.escapeHtml(c)}</span>`).join('')}
-            ${booking.clientEnvironments.length > 3 ? `<span class="hb-tag hb-more-tag">+${booking.clientEnvironments.length - 3} more</span>` : ''}
-          </div>
-          <div class="hb-booking-meta">
-            <span>${formatDate(booking.bookedAt)}</span>
-            ${booking.bookedBy ? `<span>by ${Utils.escapeHtml(booking.bookedBy)}</span>` : ''}
+          <div class="hb-booking-details">
+            <div class="hb-booking-tags">
+              ${components.map(c => `<span class="hb-tag hb-component-tag">${Utils.escapeHtml(c)}</span>`).join('')}
+            </div>
+            <div class="hb-booking-tags">
+              ${clients.slice(0, 3).map(c => `<span class="hb-tag hb-client-tag">${Utils.escapeHtml(c)}</span>`).join('')}
+              ${clients.length > 3 ? `<span class="hb-tag hb-more-tag">+${clients.length - 3} more</span>` : ''}
+            </div>
+            <div class="hb-booking-meta">
+              ${date ? `<span>${formatDate(date)}</span>` : ''}
+              ${by ? `<span>by ${Utils.escapeHtml(by)}</span>` : ''}
+            </div>
           </div>
         </div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
   }
 
   /**
