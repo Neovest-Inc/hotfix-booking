@@ -12,27 +12,35 @@ from .versioning import compare_versions, is_semver, parse_version
 
 
 def derive_minor_versions(
-    recent_cms: list[dict], major: int, count: int = 5
-) -> tuple[int, list[dict]]:
-    """From recent CMs find the highest `minor` where major matches `major`.
+    recent_cms: list[dict], count: int = 8
+) -> tuple[int, int, list[dict]]:
+    """Return the top-N most recent (major, minor) release lines from actual data.
 
-    Returns (current_minor, [{"major","minor","label"} for last `count` minors clamped ≥0]).
-    Matches Node's `for (let i = 0; i < 5; i++) if (currentMinor - i >= 0)`.
+    Cross-major: after 9.99 the next release is 10.0, and both may be actively
+    supported for some time. The dropdown shows both.
+
+    Returns `(current_major, current_minor, entries)`:
+      - `current_*` = the highest (major, minor) pair present, or `(0, 0)` if empty
+      - `entries` = list of `{major, minor, label}` sorted descending by
+        `(major, minor)`, deduplicated, at most `count` items
     """
-    current_minor = 0
+    pairs: set[tuple[int, int]] = set()
     for cm in recent_cms:
         for version in cm.get("fixVersions", []) or []:
             if is_semver(version):
                 v = parse_version(version)
-                if v.major == major and v.minor > current_minor:
-                    current_minor = v.minor
+                pairs.add((v.major, v.minor))
 
-    minors = []
-    for i in range(count):
-        m = current_minor - i
-        if m >= 0:
-            minors.append({"major": major, "minor": m, "label": f"{major}.{m}.x"})
-    return current_minor, minors
+    if not pairs:
+        return 0, 0, []
+
+    ordered = sorted(pairs, reverse=True)
+    current_major, current_minor = ordered[0]
+    entries = [
+        {"major": major, "minor": minor, "label": f"{major}.{minor}.x"}
+        for major, minor in ordered[:count]
+    ]
+    return current_major, current_minor, entries
 
 
 def merge_hotfixes(

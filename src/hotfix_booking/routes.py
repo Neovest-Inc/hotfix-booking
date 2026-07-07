@@ -87,30 +87,33 @@ async def deployed_cms(request: Request) -> Any:
 async def next_version(
     request: Request,
     minor: int | None = Query(default=None),
-    major: int = Query(default=9),
+    major: int | None = Query(default=None),
 ) -> Any:
     """Compute the next available hotfix version.
 
-    - Without `?minor=` → uses last-100-day deployed CMs; returns the next hotfix
-      for whichever minor line is currently highest (default use case).
-    - With `?minor=X` → also queries Jira for the full history of `major.minor.*`
-      (no 100-day cap) so users can book hotfixes for older, still-supported minors.
+    Query params:
+    - Neither `major` nor `minor` → uses the current (highest) release line
+      auto-discovered from recent CMs. Default use case.
+    - `?major=X&minor=Y` → fetches the full history of `X.Y.*` from Jira
+      (no 100-day cap) so users can book hotfixes for older, still-supported
+      minors — including previous majors (e.g. 9.99.x while 10.0.x is active).
 
-    Response always includes `currentMinor` and `minorVersions` so the front-end
-    can populate its release-selector dropdown from a single call.
+    Response always includes `currentMajor`, `currentMinor`, and `minorVersions`
+    so the front-end can populate its release-selector dropdown from a single call.
     """
     settings = get_settings()
+    filter_requested = major is not None and minor is not None
     try:
         async with _jira(request) as jira:
             recent_cms = await jira.fetch_deployed_cms(deployed_only=True)
             filtered_cms: list[dict] | None = None
-            if minor is not None:
+            if filter_requested:
                 filtered_cms = await jira.fetch_cms_by_version(major, minor)
     except Exception as e:  # noqa: BLE001
         log.error("Next version error: %s", e)
         return JSONResponse({"error": "Failed to calculate next version"}, status_code=500)
 
-    current_minor, minor_versions = derive_minor_versions(recent_cms, major=major)
+    current_major, current_minor, minor_versions = derive_minor_versions(recent_cms)
 
     with bookings_lock():
         try:
@@ -134,18 +137,20 @@ async def next_version(
         else:
             data["bookings"] = kept
 
-    effective_minor = minor if minor is not None else current_minor
+    effective_major = major if filter_requested else current_major
+    effective_minor = minor if filter_requested else current_minor
     cms_for_calc = filtered_cms if filtered_cms is not None else recent_cms
     result = calculate_next_version(
         cms_for_calc,
         data.get("bookings", []),
-        major=major if minor is not None else None,
-        minor=minor,
+        major=effective_major if filter_requested or current_major else None,
+        minor=effective_minor if filter_requested or current_minor else None,
     )
 
     response: dict[str, Any] = {
-        "major": major,
+        "major": effective_major,
         "minor": effective_minor,
+        "currentMajor": current_major,
         "currentMinor": current_minor,
         "minorVersions": minor_versions,
     }
@@ -312,15 +317,17 @@ async def client_versions(request: Request) -> Any:
 async def history(
     request: Request,
     minor: int | None = Query(default=None),
-    major: int = Query(default=9),
+    major: int | None = Query(default=None),
 ) -> Any:
     settings = get_settings()
+    filter_requested = major is not None and minor is not None
     try:
         async with _jira(request) as jira:
             recent_cms = await jira.fetch_deployed_cms(deployed_only=False)
-            current_minor, minor_versions = derive_minor_versions(recent_cms, major=major)
-            target_minor = minor if minor is not None else current_minor
-            version_cms = await jira.fetch_cms_by_version(major, target_minor)
+            current_major, current_minor, minor_versions = derive_minor_versions(recent_cms)
+            target_major = major if filter_requested else current_major
+            target_minor = minor if filter_requested else current_minor
+            version_cms = await jira.fetch_cms_by_version(target_major, target_minor)
     except Exception as e:  # noqa: BLE001
         log.error("Hotfix history error: %s", e)
         return JSONResponse({"error": "Failed to fetch hotfix history"}, status_code=500)
@@ -330,12 +337,14 @@ async def history(
     except MalformedBookingsError:
         return _malformed_response()
     hotfixes = merge_hotfixes(
-        version_cms, booking_data.get("bookings", []), major=major, target_minor=target_minor
+        version_cms, booking_data.get("bookings", []), major=target_major, target_minor=target_minor
     )
 
     return {
         "minorVersions": minor_versions,
+        "currentMajor": current_major,
         "currentMinor": current_minor,
+        "targetMajor": target_major,
         "targetMinor": target_minor,
         "hotfixes": hotfixes,
         "jiraBaseUrl": settings.jira_base_url,

@@ -205,19 +205,19 @@ class TestNextVersion:
         self, client: TestClient, mock_jira: respx.MockRouter
     ) -> None:
         """The Book Hotfix UI populates its release dropdown from this response,
-        so /next-version must include the last-5 minor versions and currentMinor."""
+        so /next-version must include the discovered minor lines and current pair."""
         mock_jira.post("/rest/api/3/search/jql").mock(
             return_value=httpx.Response(200, json=load_fixture("search_deployed.json"))
         )
         r = client.get("/api/hotfix-booking/next-version")
         assert r.status_code == 200
         body = r.json()
-        # Deployed fixture has max 9.94.22, so currentMinor = 94
+        # Deployed fixture has (9,94) and (9,92) as distinct pairs.
+        assert body["currentMajor"] == 9
         assert body["currentMinor"] == 94
         assert body["major"] == 9
         assert body["minor"] == 94
-        # 5 minor versions, latest first
-        assert [m["minor"] for m in body["minorVersions"]] == [94, 93, 92, 91, 90]
+        assert [(m["major"], m["minor"]) for m in body["minorVersions"]] == [(9, 94), (9, 92)]
 
     def test_minor_query_filters_to_that_minor(
         self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
@@ -235,7 +235,7 @@ class TestNextVersion:
         mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_responder)
 
         # search_by_version_9_92 fixture max is 9.92.86 → next should be 9.92.87
-        r = client.get("/api/hotfix-booking/next-version?minor=92")
+        r = client.get("/api/hotfix-booking/next-version?major=9&minor=92")
         assert r.status_code == 200
         body = r.json()
         assert body["nextVersion"] == "9.92.87"
@@ -267,7 +267,7 @@ class TestNextVersion:
              "clientEnvironments": ["CL"], "bookedBy": "U",
              "bookedAt": "2026-07-01T00:00:00+00:00", "status": "booked"},
         ])
-        r = client.get("/api/hotfix-booking/next-version?minor=92")
+        r = client.get("/api/hotfix-booking/next-version?major=9&minor=92")
         assert r.status_code == 200
         body = r.json()
         assert body["nextVersion"] == "9.92.88"
@@ -282,7 +282,7 @@ class TestNextVersion:
             return httpx.Response(200, json=load_fixture("search_deployed.json"))
         mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_responder)
 
-        r = client.get("/api/hotfix-booking/next-version?minor=80")
+        r = client.get("/api/hotfix-booking/next-version?major=9&minor=80")
         assert r.status_code == 200
         body = r.json()
         assert body["nextVersion"] is None
@@ -354,12 +354,13 @@ class TestHistory:
         r = client.get("/api/hotfix-booking/history")
         assert r.status_code == 200
         body = r.json()
-        # search_all fixture has 9.94.x → currentMinor = 94
+        # search_all fixture has (9,94) and (9,92) as distinct pairs.
+        assert body["currentMajor"] == 9
         assert body["currentMinor"] == 94
+        assert body["targetMajor"] == 9
         assert body["targetMinor"] == 94
         assert body["jiraBaseUrl"] == TEST_JIRA_BASE
-        # 5 minor versions listed, latest first
-        assert [m["minor"] for m in body["minorVersions"]] == [94, 93, 92, 91, 90]
+        assert [(m["major"], m["minor"]) for m in body["minorVersions"]] == [(9, 94), (9, 92)]
         assert body["minorVersions"][0] == {"major": 9, "minor": 94, "label": "9.94.x"}
 
     def test_minor_query_overrides(
@@ -371,7 +372,7 @@ class TestHistory:
              "clientEnvironments": ["CL001"], "bookedBy": "Alice",
              "bookedAt": "2026-03-01T00:00:00Z", "status": "booked"},
         ])
-        r = client.get("/api/hotfix-booking/history?minor=92")
+        r = client.get("/api/hotfix-booking/history?major=9&minor=92")
         assert r.status_code == 200
         body = r.json()
         assert body["targetMinor"] == 92
@@ -392,7 +393,7 @@ class TestHistory:
              "clientEnvironments": ["Y"], "bookedBy": "Z",
              "bookedAt": "2026-01-01T00:00:00Z", "status": "booked"},
         ])
-        r = client.get("/api/hotfix-booking/history?minor=92")
+        r = client.get("/api/hotfix-booking/history?major=9&minor=92")
         assert r.status_code == 200
         entries = [h for h in r.json()["hotfixes"] if h["version"] == "9.92.85"]
         assert len(entries) == 1

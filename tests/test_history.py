@@ -34,28 +34,60 @@ def _booking(version, booked_at="2026-02-01T00:00:00Z", booked_by="Dashboard Use
 
 class TestDeriveMinorVersions:
     def test_empty_input(self) -> None:
-        current, minors = derive_minor_versions([], major=9)
-        assert current == 0
-        assert minors == [{"major": 9, "minor": 0, "label": "9.0.x"}]
+        current_major, current_minor, minors = derive_minor_versions([])
+        assert current_major == 0
+        assert current_minor == 0
+        assert minors == []
 
-    def test_finds_max_minor_for_major(self) -> None:
-        cms = [_cm("CM-1", ["9.92.1"]), _cm("CM-2", ["9.94.5"]), _cm("CM-3", ["8.99.1"])]
-        current, minors = derive_minor_versions(cms, major=9)
-        assert current == 94
+    def test_returns_actual_pairs_from_data(self) -> None:
+        # Includes a gap (no 9.93.x): must NOT invent a phantom option.
+        cms = [_cm("CM-1", ["9.94.5"]), _cm("CM-2", ["9.92.1"])]
+        current_major, current_minor, minors = derive_minor_versions(cms)
+        assert (current_major, current_minor) == (9, 94)
         labels = [m["label"] for m in minors]
-        assert labels == ["9.94.x", "9.93.x", "9.92.x", "9.91.x", "9.90.x"]
+        assert labels == ["9.94.x", "9.92.x"]
 
-    def test_clamps_at_zero(self) -> None:
-        cms = [_cm("CM-1", ["9.2.0"])]
-        current, minors = derive_minor_versions(cms, major=9)
-        assert current == 2
-        # Should only return 3 items: 9.2.x, 9.1.x, 9.0.x
-        assert [m["minor"] for m in minors] == [2, 1, 0]
+    def test_crosses_major_boundary(self) -> None:
+        """After 9.99, when 10.0.0 exists in Jira, it must appear at the top."""
+        cms = [
+            _cm("CM-A", ["9.99.5"]),
+            _cm("CM-B", ["10.0.1"]),
+            _cm("CM-C", ["10.0.0"]),
+            _cm("CM-D", ["9.98.3"]),
+        ]
+        current_major, current_minor, minors = derive_minor_versions(cms)
+        assert (current_major, current_minor) == (10, 0)
+        labels = [m["label"] for m in minors]
+        assert labels == ["10.0.x", "9.99.x", "9.98.x"]
+
+    def test_top_n_defaults_to_8(self) -> None:
+        cms = [_cm(f"CM-{i}", [f"9.{i}.0"]) for i in range(1, 15)]
+        _, _, minors = derive_minor_versions(cms)
+        assert len(minors) == 8
+        # Latest 8 minors: 14 down to 7
+        assert [m["minor"] for m in minors] == [14, 13, 12, 11, 10, 9, 8, 7]
+
+    def test_count_override(self) -> None:
+        cms = [_cm(f"CM-{i}", [f"9.{i}.0"]) for i in range(1, 10)]
+        _, _, minors = derive_minor_versions(cms, count=3)
+        assert [m["minor"] for m in minors] == [9, 8, 7]
+
+    def test_deduplicates_repeated_pairs(self) -> None:
+        cms = [_cm("A", ["9.94.1"]), _cm("B", ["9.94.5"]), _cm("C", ["9.94.10"])]
+        _, _, minors = derive_minor_versions(cms)
+        # 9.94.x appears once, not three times
+        assert [m["minor"] for m in minors] == [94]
 
     def test_ignores_non_semver(self) -> None:
         cms = [_cm("CM-1", ["not-a-version", "9.92.1", "9.95"])]
-        current, _ = derive_minor_versions(cms, major=9)
-        assert current == 92  # 9.95 is not semver (no patch)
+        current_major, current_minor, minors = derive_minor_versions(cms)
+        assert (current_major, current_minor) == (9, 92)  # "9.95" is not semver
+        assert [m["minor"] for m in minors] == [92]
+
+    def test_entry_shape(self) -> None:
+        cms = [_cm("CM-1", ["10.0.5"])]
+        _, _, minors = derive_minor_versions(cms)
+        assert minors == [{"major": 10, "minor": 0, "label": "10.0.x"}]
 
 
 class TestMergeHotfixes:

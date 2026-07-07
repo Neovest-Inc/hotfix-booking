@@ -8,13 +8,20 @@
   let initialized = false;
   let fieldOptionsLoaded = false;
   let nextVersion = null;
-  let selectedMinor = null;           // null = server default (current release)
+  // Currently-selected release line. `null` = server default (current release).
+  // Values are integers representing major/minor of the release the user picked.
+  let selectedMajor = null;
+  let selectedMinor = null;
   let bookMinorOptionsLoaded = false; // populate the release <select> only once
   let selectedComponents = [];
   let selectedClients = [];
   let availableComponents = [];
   let availableClients = [];
   let jiraBaseUrl = '';
+
+  // Show the latest N hotfixes in the Recent Hotfixes feed, and offer at most
+  // N minor lines in the release dropdown.
+  const RECENT_HOTFIXES_COUNT = 8;
 
   // Auto-refresh state (Book Hotfix view only, while tab visible)
   const AUTO_REFRESH_MS = 30000;
@@ -187,10 +194,13 @@
       });
     }
 
-    // Book Hotfix: release-line selector (lets users book against previous minors)
+    // Book Hotfix: release-line selector (lets users book against previous minors
+    // and previous majors, e.g. 9.99.x while 10.0.x is active).
     if (bookMinorSelect) {
       bookMinorSelect.addEventListener('change', async () => {
-        selectedMinor = bookMinorSelect.value ? parseInt(bookMinorSelect.value, 10) : null;
+        const parsed = parseReleaseValue(bookMinorSelect.value);
+        selectedMajor = parsed.major;
+        selectedMinor = parsed.minor;
         showLoading(true);
         try {
           await Promise.all([loadNextVersion(), loadBookings()]);
@@ -549,9 +559,7 @@
    */
   async function loadNextVersion() {
     try {
-      const url = selectedMinor !== null
-        ? `/api/hotfix-booking/next-version?minor=${selectedMinor}`
-        : '/api/hotfix-booking/next-version';
+      const url = releaseQueryString('/api/hotfix-booking/next-version');
       const response = await fetch(url);
       const data = await response.json();
 
@@ -560,15 +568,17 @@
         bookMinorSelect.innerHTML = '';
         data.minorVersions.forEach(v => {
           const opt = document.createElement('option');
-          opt.value = v.minor;
+          opt.value = `${v.major}.${v.minor}`;
           opt.textContent = v.label;
-          if (v.minor === data.minor) opt.selected = true;
+          if (v.major === data.major && v.minor === data.minor) opt.selected = true;
           bookMinorSelect.appendChild(opt);
         });
         bookMinorOptionsLoaded = true;
-        // Now that we know the effective minor, lock it in so the bookings
+        // Now that we know the effective release, lock it in so the bookings
         // list stays in sync with the badge.
-        if (selectedMinor === null && typeof data.minor === 'number') {
+        if (selectedMinor === null
+            && typeof data.major === 'number' && typeof data.minor === 'number') {
+          selectedMajor = data.major;
           selectedMinor = data.minor;
           loadBookings();
         }
@@ -597,9 +607,9 @@
    * which release to filter by.
    */
   async function loadBookings() {
-    if (selectedMinor === null) return;   // wait until loadNextVersion sets it
+    if (selectedMinor === null || selectedMajor === null) return;
     try {
-      const url = `/api/hotfix-booking/history?minor=${selectedMinor}&major=9`;
+      const url = releaseQueryString('/api/hotfix-booking/history');
       const response = await fetch(url);
       const data = await response.json();
       renderRecentHotfixes(data.hotfixes || []);
@@ -609,20 +619,44 @@
   }
 
   /**
+   * Parse a release-select `<option>` value like "9.97" into { major, minor }.
+   * Empty / unparseable values return nulls (server default).
+   */
+  function parseReleaseValue(value) {
+    if (!value) return { major: null, minor: null };
+    const parts = String(value).split('.');
+    if (parts.length !== 2) return { major: null, minor: null };
+    const major = parseInt(parts[0], 10);
+    const minor = parseInt(parts[1], 10);
+    if (Number.isNaN(major) || Number.isNaN(minor)) return { major: null, minor: null };
+    return { major, minor };
+  }
+
+  /**
+   * Append `?major=X&minor=Y` (or nothing) to a URL based on current selection.
+   */
+  function releaseQueryString(url) {
+    if (selectedMajor === null || selectedMinor === null) return url;
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}major=${selectedMajor}&minor=${selectedMinor}`;
+  }
+
+  /**
    * Compact list of the 5 latest hotfixes (deployed + booked, mixed).
    */
   function renderRecentHotfixes(hotfixes) {
     if (!bookingsListEl) return;
 
     if (hotfixes.length === 0) {
-      const label = selectedMinor !== null ? ` for 9.${selectedMinor}.x` : '';
+      const label = selectedMinor !== null && selectedMajor !== null
+        ? ` for ${selectedMajor}.${selectedMinor}.x` : '';
       bookingsListEl.innerHTML =
         `<p class="hb-no-bookings">No recent hotfixes${label} yet.</p>`;
       return;
     }
 
-    const top5 = hotfixes.slice(0, 5);
-    bookingsListEl.innerHTML = top5.map(hf => {
+    const top = hotfixes.slice(0, RECENT_HOTFIXES_COUNT);
+    bookingsListEl.innerHTML = top.map(hf => {
       const date = hf.deployedAt || hf.bookedAt || '';
       const by = hf.reporter || hf.bookedBy || '';
       const statusLabel = hf.type === 'deployed' ? (hf.status || 'Deployed') : 'Booked';
@@ -828,16 +862,21 @@
   }
 
   /**
-   * Load hotfix history
+   * Load hotfix history for a given release line.
+   * @param {string|null} release - "major.minor" e.g. "9.97", or null for server default.
    */
-  async function loadHotfixHistory(minor = null) {
+  async function loadHotfixHistory(release = null) {
     showHistoryLoading(true);
 
     try {
-      const url = minor 
-        ? `/api/hotfix-booking/history?minor=${minor}`
-        : '/api/hotfix-booking/history';
-      
+      let url = '/api/hotfix-booking/history';
+      if (release) {
+        const { major, minor } = parseReleaseValue(release);
+        if (major !== null && minor !== null) {
+          url += `?major=${major}&minor=${minor}`;
+        }
+      }
+
       const response = await fetch(url);
       const data = await response.json();
 
@@ -850,9 +889,9 @@
       if (minorVersionSelect && minorVersionSelect.options.length === 0) {
         data.minorVersions.forEach(v => {
           const option = document.createElement('option');
-          option.value = v.minor;
+          option.value = `${v.major}.${v.minor}`;
           option.textContent = v.label;
-          if (v.minor === data.currentMinor) {
+          if (v.major === data.currentMajor && v.minor === data.currentMinor) {
             option.selected = true;
           }
           minorVersionSelect.appendChild(option);

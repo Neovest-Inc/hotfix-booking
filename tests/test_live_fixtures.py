@@ -104,17 +104,19 @@ class TestSearchDeployedLive:
 class TestSearchAllLive:
     def test_derives_current_minor(self) -> None:
         cms = _cms_from_search("search_all.json")
-        current, minors = derive_minor_versions(cms, major=9)
-        assert current >= 0
-        # up to 5 items, all with major=9, minor descending, clamped ≥ 0
-        assert len(minors) <= 5
+        current_major, current_minor, minors = derive_minor_versions(cms)
+        assert current_major >= 0
+        assert current_minor >= 0
+        # Up to 8 items, sorted descending by (major, minor), all with valid semver parts
+        assert len(minors) <= 8
         prev = None
         for m in minors:
-            assert m["major"] == 9
+            assert m["major"] >= 0
             assert m["minor"] >= 0
+            pair = (m["major"], m["minor"])
             if prev is not None:
-                assert m["minor"] < prev
-            prev = m["minor"]
+                assert pair < prev
+            prev = pair
 
 
 class TestHistoryMergeLive:
