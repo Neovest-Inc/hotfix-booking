@@ -14,6 +14,13 @@
   let availableClients = [];
   let jiraBaseUrl = '';
 
+  // Auto-refresh state (Book Hotfix view only, while tab visible)
+  const AUTO_REFRESH_MS = 30000;
+  let autoRefreshTimer = null;
+
+  // All user-facing timestamps are shown in Eastern Time (ET).
+  const DISPLAY_TZ = 'America/New_York';
+
   // DOM Elements
   let pillBtns;
   let bookView;
@@ -92,13 +99,29 @@
         bookView.style.display = view === 'book' ? 'block' : 'none';
         matrixView.style.display = view === 'matrix' ? 'block' : 'none';
         historyView.style.display = view === 'history' ? 'block' : 'none';
-        
+
+        if (view === 'book') {
+          startBookAutoRefresh();
+        } else {
+          stopBookAutoRefresh();
+        }
         if (view === 'matrix') {
           loadVersionMatrix();
         } else if (view === 'history') {
           loadHotfixHistory();
         }
       });
+    });
+
+    // Pause auto-refresh when the browser tab is hidden, resume when visible again
+    // (only if we're currently on the Book view).
+    document.addEventListener('visibilitychange', () => {
+      const bookVisible = bookView && bookView.style.display !== 'none';
+      if (document.hidden) {
+        stopBookAutoRefresh();
+      } else if (bookVisible) {
+        startBookAutoRefresh();
+      }
     });
 
     // Multi-select dropdowns
@@ -262,6 +285,30 @@
       loadFieldOptions();
       loadNextVersion();
       loadBookings();
+    }
+    // Book view is the default view — kick off auto-refresh.
+    if (bookView && bookView.style.display !== 'none') {
+      startBookAutoRefresh();
+    }
+  }
+
+  /**
+   * Periodically refresh next-version and recent bookings while the Book view
+   * is on screen and the browser tab is visible. Prevents stale UI if someone
+   * else books a version while this tab is idle.
+   */
+  function startBookAutoRefresh() {
+    if (autoRefreshTimer) return;
+    autoRefreshTimer = setInterval(() => {
+      loadNextVersion();
+      loadBookings();
+    }, AUTO_REFRESH_MS);
+  }
+
+  function stopBookAutoRefresh() {
+    if (autoRefreshTimer) {
+      clearInterval(autoRefreshTimer);
+      autoRefreshTimer = null;
     }
   }
 
@@ -569,8 +616,25 @@
 
       const data = await response.json();
 
+      // Stale-version case: server tells us the current next has moved on.
+      // Update the badge, tell the user, and abort — they can click again.
+      if (response.status === 409 && data.currentNext) {
+        nextVersion = data.currentNext;
+        if (nextVersionEl) {
+          nextVersionEl.textContent = nextVersion;
+        }
+        Utils.showToast(
+          `Version ${data.currentNext} is now the next available (you had a stale value). Click Book again to reserve it.`,
+          'warning'
+        );
+        loadBookings();
+        return;
+      }
+
       if (data.error) {
         Utils.showToast(data.error, 'error');
+        // Something else changed on the server — resync the badge just in case.
+        loadNextVersion();
         return;
       }
 
@@ -745,7 +809,7 @@
       const statusLabel = hf.type === 'deployed' ? hf.status : 'Booked';
       const statusClass = getStatusClass(statusLabel);
       const date = hf.deployedAt || hf.bookedAt || '-';
-      const displayDate = date !== '-' ? new Date(date).toLocaleDateString() : '-';
+      const displayDate = formatDateOnly(date);
       
       html += `
         <tr>
@@ -804,15 +868,38 @@
   }
 
   /**
-   * Format date string
+   * Format an ISO timestamp for display in Eastern Time (ET).
+   * Used for `bookedAt` in the Recent Bookings feed.
    */
   function formatDate(dateStr) {
+    if (!dateStr) return '';
     const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', {
+    if (isNaN(date.getTime())) return dateStr;
+    return date.toLocaleString('en-US', {
+      timeZone: DISPLAY_TZ,
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit'
+    }) + ' ET';
+  }
+
+  /**
+   * Format a date-only string (from Jira's TargetDeploymentDate, e.g. "2026-05-15")
+   * or an ISO timestamp for display in ET.
+   */
+  function formatDateOnly(dateStr) {
+    if (!dateStr) return '-';
+    // Jira `TargetDeploymentDate` values like "2026-05-15" are timezone-agnostic —
+    // pass through unchanged. Only convert full ISO timestamps.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
+    return date.toLocaleDateString('en-US', {
+      timeZone: DISPLAY_TZ,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric'
     });
   }
 
