@@ -3149,7 +3149,8 @@ body {
 
 .hb-booking-item {
   display: flex;
-  gap: 16px;
+  flex-direction: column;
+  gap: 6px;
   padding: 12px 0;
   border-bottom: 1px solid #f1f3f4;
 }
@@ -3158,19 +3159,26 @@ body {
   border-bottom: none;
 }
 
-.hb-booking-version {
-  font-family: 'Google Sans', sans-serif;
-  font-size: 16px;
-  font-weight: 500;
-  color: #1a73e8;
-  min-width: 80px;
+.hb-booking-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.hb-booking-details {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.hb-booking-version {
+  font-family: 'Google Sans', sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  color: #1a73e8;
+  white-space: nowrap;
+}
+
+.hb-booking-when {
+  margin-left: auto;
+  font-size: 12px;
+  color: #80868b;
+  white-space: nowrap;
 }
 
 .hb-booking-tags {

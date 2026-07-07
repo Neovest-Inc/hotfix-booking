@@ -618,23 +618,23 @@
       const components = hf.components || [];
       return `
         <div class="hb-booking-item">
-          <div class="hb-booking-version">
-            ${Utils.escapeHtml(hf.version)}
-            <span class="cm-status ${statusClass}" style="margin-left: 6px; font-size: 0.75em; vertical-align: middle;">${Utils.escapeHtml(statusLabel)}</span>
+          <div class="hb-booking-header">
+            <span class="hb-booking-version">${Utils.escapeHtml(hf.version)}</span>
+            <span class="cm-status ${statusClass}">${Utils.escapeHtml(statusLabel)}</span>
+            <span class="hb-booking-when">
+              ${date ? Utils.escapeHtml(formatDate(date)) : ''}${by ? ' &middot; ' + Utils.escapeHtml(by) : ''}
+            </span>
           </div>
-          <div class="hb-booking-details">
+          ${components.length ? `
             <div class="hb-booking-tags">
-              ${components.map(c => `<span class="hb-tag hb-component-tag">${Utils.escapeHtml(c)}</span>`).join('')}
-            </div>
+              ${components.slice(0, 3).map(c => `<span class="hb-tag hb-component-tag">${Utils.escapeHtml(c)}</span>`).join('')}
+              ${components.length > 3 ? `<span class="hb-tag hb-more-tag">+${components.length - 3} more</span>` : ''}
+            </div>` : ''}
+          ${clients.length ? `
             <div class="hb-booking-tags">
               ${clients.slice(0, 3).map(c => `<span class="hb-tag hb-client-tag">${Utils.escapeHtml(c)}</span>`).join('')}
               ${clients.length > 3 ? `<span class="hb-tag hb-more-tag">+${clients.length - 3} more</span>` : ''}
-            </div>
-            <div class="hb-booking-meta">
-              ${date ? `<span>${formatDate(date)}</span>` : ''}
-              ${by ? `<span>by ${Utils.escapeHtml(by)}</span>` : ''}
-            </div>
-          </div>
+            </div>` : ''}
         </div>
       `;
     }).join('');
