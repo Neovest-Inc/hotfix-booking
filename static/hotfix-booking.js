@@ -8,6 +8,8 @@
   let initialized = false;
   let fieldOptionsLoaded = false;
   let nextVersion = null;
+  let selectedMinor = null;           // null = server default (current release)
+  let bookMinorOptionsLoaded = false; // populate the release <select> only once
   let selectedComponents = [];
   let selectedClients = [];
   let availableComponents = [];
@@ -36,6 +38,7 @@
   let clientDropdown;
   let bookBtn;
   let bookingsListEl;
+  let bookMinorSelect;
   let matrixTableEl;
   let refreshMatrixBtn;
   let historyTableEl;
@@ -81,6 +84,7 @@
     clientDropdown = document.getElementById('hbClientDropdown');
     bookBtn = document.getElementById('hbBookBtn');
     bookingsListEl = document.getElementById('hbBookingsList');
+    bookMinorSelect = document.getElementById('hbBookMinorSelect');
     matrixTableEl = document.getElementById('hbMatrixTable');
     refreshMatrixBtn = document.getElementById('hbRefreshMatrix');
     historyTableEl = document.getElementById('hbHistoryTable');
@@ -167,6 +171,14 @@
     if (minorVersionSelect) {
       minorVersionSelect.addEventListener('change', () => {
         loadHotfixHistory(minorVersionSelect.value);
+      });
+    }
+
+    // Book Hotfix: release-line selector (lets users book against previous minors)
+    if (bookMinorSelect) {
+      bookMinorSelect.addEventListener('change', () => {
+        selectedMinor = bookMinorSelect.value ? parseInt(bookMinorSelect.value, 10) : null;
+        loadNextVersion();
       });
     }
 
@@ -507,14 +519,33 @@
   }
 
   /**
-   * Load next available version
+   * Load the next available version for the currently-selected release line.
+   * Also (on the first call) populates the release-selector dropdown from the
+   * `minorVersions` list returned by the server.
    */
   async function loadNextVersion() {
     try {
-      const response = await fetch('/api/hotfix-booking/next-version');
+      const url = selectedMinor !== null
+        ? `/api/hotfix-booking/next-version?minor=${selectedMinor}`
+        : '/api/hotfix-booking/next-version';
+      const response = await fetch(url);
       const data = await response.json();
 
+      // Populate the release-selector once we have the minorVersions list.
+      if (!bookMinorOptionsLoaded && bookMinorSelect && Array.isArray(data.minorVersions)) {
+        bookMinorSelect.innerHTML = '';
+        data.minorVersions.forEach(v => {
+          const opt = document.createElement('option');
+          opt.value = v.minor;
+          opt.textContent = v.label;
+          if (v.minor === data.minor) opt.selected = true;
+          bookMinorSelect.appendChild(opt);
+        });
+        bookMinorOptionsLoaded = true;
+      }
+
       if (data.error && !data.nextVersion) {
+        nextVersion = null;
         nextVersionEl.textContent = 'N/A';
         nextVersionEl.title = data.error;
         return;
