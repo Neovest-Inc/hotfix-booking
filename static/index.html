@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hotfix Booking</title>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    /* Minimal shell overrides so the standalone page fills the viewport
+       without depending on the dashboard's outer layout. */
+    body { margin: 0; }
+    .main-content { padding: 24px; max-width: 1400px; margin: 0 auto; }
+    .app-header {
+      background: #fff;
+      border-bottom: 1px solid #e0e0e0;
+      padding: 12px 24px;
+    }
+    .app-header h1 {
+      margin: 0;
+      font-family: 'Google Sans', sans-serif;
+      font-size: 20px;
+      color: #1a73e8;
+      display: flex; align-items: center; gap: 8px;
+    }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <h1><span class="material-icons">book_online</span> Hotfix Booking</h1>
+  </header>
+
+  <main class="main-content">
+    <div id="hotfix-booking" class="hotfix-booking-view tab-content">
+      <div class="hb-header">
+        <h2><span class="material-icons">book_online</span> Hotfix Booking</h2>
+        <p class="hb-subtitle">Book hotfix versions and track component deployments per client</p>
+      </div>
+
+      <!-- Pill Toggle -->
+      <div class="hb-pill-toggle">
+        <button class="pill-btn active" data-view="book">
+          <span class="material-icons">add_circle</span>
+          Book Hotfix
+        </button>
+        <button class="pill-btn" data-view="matrix">
+          <span class="material-icons">grid_on</span>
+          Version Matrix
+        </button>
+        <button class="pill-btn" data-view="history">
+          <span class="material-icons">history</span>
+          Hotfix History
+        </button>
+      </div>
+
+      <!-- Book Hotfix View -->
+      <div id="hbBookView" class="hb-subview">
+        <div id="hbLoading" class="hb-loading" style="display: none;">
+          <div class="spinner"></div>
+          <p>Loading...</p>
+        </div>
+        <div id="hbBookContent" class="hb-book-content">
+          <div class="hb-booking-form">
+            <div class="hb-version-display">
+              <label>Next Available Version:</label>
+              <span id="hbNextVersion" class="hb-version-badge">--</span>
+            </div>
+
+            <div class="hb-form-group">
+              <label for="hbComponentSelect">Components:</label>
+              <div id="hbComponentSelect" class="hb-multi-select">
+                <div class="hb-select-toggle" id="hbComponentToggle">
+                  <span class="hb-select-text placeholder">Select components...</span>
+                  <span class="material-icons">expand_more</span>
+                </div>
+                <div class="hb-select-dropdown" id="hbComponentDropdown"></div>
+              </div>
+            </div>
+
+            <div class="hb-form-group">
+              <label for="hbClientSelect">Client Environments:</label>
+              <div id="hbClientSelect" class="hb-multi-select">
+                <div class="hb-select-toggle" id="hbClientToggle">
+                  <span class="hb-select-text placeholder">Select clients...</span>
+                  <span class="material-icons">expand_more</span>
+                </div>
+                <div class="hb-select-dropdown" id="hbClientDropdown"></div>
+              </div>
+            </div>
+
+            <button id="hbBookBtn" class="hb-book-btn">
+              <span class="material-icons">book_online</span>
+              Book Hotfix Version
+            </button>
+          </div>
+
+          <div class="hb-bookings-list">
+            <h3>Recent Bookings</h3>
+            <div id="hbBookingsList"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Version Matrix View -->
+      <div id="hbMatrixView" class="hb-subview" style="display: none;">
+        <div id="hbMatrixLoading" class="hb-loading" style="display: none;">
+          <div class="spinner"></div>
+          <p>Loading version matrix...</p>
+        </div>
+        <div id="hbMatrixContent" class="hb-matrix-content">
+          <div class="hb-matrix-controls">
+            <button id="hbRefreshMatrix" class="hb-refresh-btn">
+              <span class="material-icons">refresh</span>
+              Refresh
+            </button>
+          </div>
+          <div id="hbMatrixTable" class="hb-matrix-table-container"></div>
+        </div>
+      </div>
+
+      <!-- Hotfix History View -->
+      <div id="hbHistoryView" class="hb-subview" style="display: none;">
+        <div id="hbHistoryLoading" class="hb-loading" style="display: none;">
+          <div class="spinner"></div>
+          <p>Loading hotfix history...</p>
+        </div>
+        <div id="hbHistoryContent" class="hb-history-content">
+          <div class="hb-history-controls">
+            <div class="hb-filter-group">
+              <label for="hbMinorVersionSelect">Minor Version:</label>
+              <select id="hbMinorVersionSelect" class="hb-select"></select>
+            </div>
+            <button id="hbRefreshHistory" class="hb-refresh-btn">
+              <span class="material-icons">refresh</span>
+              Refresh
+            </button>
+          </div>
+          <div id="hbHistoryTable" class="hb-history-table-container"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/utils.js"></script>
+  <script src="/hotfix-booking.js"></script>
+  <script>
+    // Standalone bootstrap — the original dashboard called these on tab-show;
+    // here we only have one tab, so run both on DOMContentLoaded.
+    document.addEventListener('DOMContentLoaded', () => {
+      if (window.HotfixBookingModule) {
+        window.HotfixBookingModule.init();
+        window.HotfixBookingModule.onTabShow();
+      }
+    });
+  </script>
+</body>
+</html>

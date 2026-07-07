@@ -1,0 +1,213 @@
+"""HTTP routes — 1:1 with server/hotfix-booking.js."""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Body, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
+
+from .config import get_settings
+from .history import (
+    calculate_next_version,
+    derive_minor_versions,
+    deployed_versions,
+    merge_hotfixes,
+)
+from .jira_client import JiraClient
+from .matrix import build_version_matrix
+from .store import (
+    AlreadyBookedError,
+    create_booking,
+    load_bookings,
+    save_bookings,
+)
+
+log = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/hotfix-booking")
+
+
+def _jira(request: Request) -> JiraClient:
+    """Build a JiraClient — tests may swap `request.app.state.jira_client_factory`."""
+    settings = get_settings()
+    factory = getattr(request.app.state, "jira_client_factory", None)
+    if factory is not None:
+        return factory(settings)
+    return JiraClient(settings)
+
+
+# ---------------------------------------------------------------------------
+# GET /field-options
+# ---------------------------------------------------------------------------
+@router.get("/field-options")
+async def field_options(request: Request) -> Any:
+    try:
+        async with _jira(request) as jira:
+            components = await jira.fetch_components()
+            clients = await jira.fetch_client_options()
+        return {"components": components, "clients": clients}
+    except Exception as e:  # noqa: BLE001 — matches Node's broad catch
+        log.error("Field options error: %s", e)
+        return JSONResponse({"error": "Failed to fetch field options"}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# GET /deployed-cms
+# ---------------------------------------------------------------------------
+@router.get("/deployed-cms")
+async def deployed_cms(request: Request) -> Any:
+    try:
+        async with _jira(request) as jira:
+            cms = await jira.fetch_deployed_cms(deployed_only=False)
+        return {"cms": cms}
+    except Exception as e:  # noqa: BLE001
+        log.error("Deployed CMs error: %s", e)
+        return JSONResponse({"error": "Failed to fetch deployed CMs"}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# GET /next-version  (with auto-cleanup side effect)
+# ---------------------------------------------------------------------------
+@router.get("/next-version")
+async def next_version(request: Request) -> Any:
+    settings = get_settings()
+    try:
+        async with _jira(request) as jira:
+            cms = await jira.fetch_deployed_cms(deployed_only=True)
+    except Exception as e:  # noqa: BLE001
+        log.error("Next version error: %s", e)
+        return JSONResponse({"error": "Failed to calculate next version"}, status_code=500)
+
+    deployed_set = deployed_versions(cms)
+
+    # Auto-cleanup: remove bookings that now match a deployed version
+    data = load_bookings(settings.bookings_file)
+    original_count = len(data.get("bookings", []))
+    kept = []
+    for b in data.get("bookings", []):
+        if b.get("version") in deployed_set:
+            log.info("Auto-cleanup: Removing booking %s (now deployed)", b.get("version"))
+        else:
+            kept.append(b)
+    if len(kept) < original_count:
+        data["bookings"] = kept
+        save_bookings(settings.bookings_file, data)
+        log.info(
+            "Auto-cleanup: Removed %d deployed bookings", original_count - len(kept)
+        )
+    else:
+        data["bookings"] = kept
+
+    result = calculate_next_version(cms, data.get("bookings", []))
+    if result.get("nextVersion") is None:
+        return {"nextVersion": None, "error": result.get("error")}
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /bookings
+# ---------------------------------------------------------------------------
+@router.get("/bookings")
+def bookings() -> Any:
+    settings = get_settings()
+    return load_bookings(settings.bookings_file)
+
+
+# ---------------------------------------------------------------------------
+# POST /book
+# ---------------------------------------------------------------------------
+@router.post("/book")
+async def book(payload: dict = Body(default_factory=dict)) -> Any:
+    settings = get_settings()
+
+    version = payload.get("version")
+    components = payload.get("components")
+    client_envs = payload.get("clientEnvironments")
+    booked_by = payload.get("bookedBy")
+
+    # Match Node's guard order: presence check first (any missing → single message).
+    if not version or components is None or client_envs is None:
+        return JSONResponse(
+            {"error": "Missing required fields: version, components, clientEnvironments"},
+            status_code=400,
+        )
+    if not isinstance(components, list) or len(components) == 0:
+        return JSONResponse(
+            {"error": "At least one component is required"}, status_code=400
+        )
+    if not isinstance(client_envs, list) or len(client_envs) == 0:
+        return JSONResponse(
+            {"error": "At least one client environment is required"}, status_code=400
+        )
+
+    data = load_bookings(settings.bookings_file)
+    try:
+        new_booking, data = create_booking(
+            data,
+            version=version,
+            components=components,
+            client_environments=client_envs,
+            booked_by=booked_by,
+        )
+    except AlreadyBookedError as e:
+        return JSONResponse(
+            {"error": f"Version {e.version} is already booked", "existingBooking": e.existing},
+            status_code=409,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.error("Booking error: %s", e)
+        return JSONResponse({"error": "Failed to book version"}, status_code=500)
+
+    save_bookings(settings.bookings_file, data)
+    return {"success": True, "booking": new_booking}
+
+
+# ---------------------------------------------------------------------------
+# GET /client-versions
+# ---------------------------------------------------------------------------
+@router.get("/client-versions")
+async def client_versions(request: Request) -> Any:
+    try:
+        async with _jira(request) as jira:
+            cms = await jira.fetch_deployed_cms(deployed_only=True)
+    except Exception as e:  # noqa: BLE001
+        log.error("Client versions error: %s", e)
+        return JSONResponse({"error": "Failed to fetch client versions"}, status_code=500)
+
+    return build_version_matrix(cms)
+
+
+# ---------------------------------------------------------------------------
+# GET /history?minor=&major=
+# ---------------------------------------------------------------------------
+@router.get("/history")
+async def history(
+    request: Request,
+    minor: int | None = Query(default=None),
+    major: int = Query(default=9),
+) -> Any:
+    settings = get_settings()
+    try:
+        async with _jira(request) as jira:
+            recent_cms = await jira.fetch_deployed_cms(deployed_only=False)
+            current_minor, minor_versions = derive_minor_versions(recent_cms, major=major)
+            target_minor = minor if minor is not None else current_minor
+            version_cms = await jira.fetch_cms_by_version(major, target_minor)
+    except Exception as e:  # noqa: BLE001
+        log.error("Hotfix history error: %s", e)
+        return JSONResponse({"error": "Failed to fetch hotfix history"}, status_code=500)
+
+    booking_data = load_bookings(settings.bookings_file)
+    hotfixes = merge_hotfixes(
+        version_cms, booking_data.get("bookings", []), major=major, target_minor=target_minor
+    )
+
+    return {
+        "minorVersions": minor_versions,
+        "currentMinor": current_minor,
+        "targetMinor": target_minor,
+        "hotfixes": hotfixes,
+        "jiraBaseUrl": settings.jira_base_url,
+    }

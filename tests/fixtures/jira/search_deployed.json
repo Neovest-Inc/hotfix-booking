@@ -1,0 +1,43 @@
+{
+  "issues": [
+    {
+      "key": "CM-1001",
+      "fields": {
+        "summary": "9.94 hotfix rollout batch A",
+        "status": {"name": "Deployment Completed"},
+        "components": [{"name": "Alerts"}, {"name": "DV_Web"}],
+        "fixVersions": [{"name": "9.94.20"}],
+        "customfield_13235": [
+          {"value": "CL001 - Fortress"},
+          {"value": "CL002 - Convex"}
+        ],
+        "customfield_10751": "2026-05-15",
+        "reporter": {"displayName": "Alice"}
+      }
+    },
+    {
+      "key": "CM-1002",
+      "fields": {
+        "summary": "9.94 hotfix rollout batch B",
+        "status": {"name": "Done"},
+        "components": [{"name": "Alerts"}],
+        "fixVersions": [{"name": "9.94.22"}, {"name": "not-semver"}],
+        "customfield_13235": [{"value": "CL002 - Convex"}],
+        "customfield_10751": "2026-05-20",
+        "reporter": {"displayName": "Bob"}
+      }
+    },
+    {
+      "key": "CM-1003",
+      "fields": {
+        "summary": "9.92 legacy patch",
+        "status": {"name": "Done"},
+        "components": [{"name": "Analytics"}],
+        "fixVersions": [{"name": "9.92.85"}],
+        "customfield_13235": [{"value": "CL003 - TPG"}],
+        "customfield_10751": "2026-02-10",
+        "reporter": {"displayName": "Alice"}
+      }
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "issues": [
+    {
+      "key": "CM-2001",
+      "fields": {
+        "summary": "9.92 patch A",
+        "status": {"name": "Done"},
+        "components": [{"name": "Alerts"}],
+        "fixVersions": [{"name": "9.92.85"}],
+        "customfield_13235": [{"value": "CL001 - Fortress"}],
+        "customfield_10751": "2026-02-10",
+        "reporter": {"displayName": "Alice"}
+      }
+    },
+    {
+      "key": "CM-2002",
+      "fields": {
+        "summary": "9.92 patch B",
+        "status": {"name": "Done"},
+        "components": [{"name": "Analytics"}],
+        "fixVersions": [{"name": "9.92.86"}],
+        "customfield_13235": [{"value": "CL002 - Convex"}],
+        "customfield_10751": "2026-02-15",
+        "reporter": {"displayName": "Bob"}
+      }
+    }
+  ]
+}
