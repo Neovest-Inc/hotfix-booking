@@ -32,16 +32,19 @@ You are working on `hotfix-booking` — a standalone Python (FastAPI) service th
 
 ```
 src/hotfix_booking/
-  app.py            FastAPI factory, /health, static mount
-  config.py         Settings loaded from .env
+  app.py            FastAPI factory, /health, NoCacheStaticFiles mount
+  config.py         Settings loaded from .env (JIRA_*, BOOKINGS_FILE,
+                    CLIENT_CONTEXT_ID, PORT, BOOKING_RETENTION_DAYS)
   jira_client.py    httpx wrapper for the 3 Jira endpoint families we use
   versioning.py     parse_version / compare_versions / is_semver
-  store.py          load/save/create bookings (JSON file)
+  store.py          load/save/create bookings, threading-lock, MalformedBookingsError
   matrix.py         build_version_matrix
-  history.py        merge_hotfixes / derive_minor_versions / calculate_next_version
+  history.py        merge_hotfixes / derive_minor_versions (cross-major, top 8) /
+                    calculate_next_version (optional major/minor filter) /
+                    cleanup_bookings (deploy- + age-based)
   routes.py         The 7 HTTP endpoints under /api/hotfix-booking
   models.py         Pydantic request/response models
-static/             HTML/CSS/JS served to the browser
+static/             HTML/CSS/JS served to the browser (no-cache headers)
 tests/
   fixtures/jira/       Hand-crafted synthetic Jira responses (hermetic tests)
   fixtures/jira-live/  Real Jira responses (git-ignored; local only)
@@ -78,11 +81,13 @@ All under `/api/hotfix-booking`:
 |---|---|---|
 | GET  | `/field-options`   | Components + client envs (from Jira) |
 | GET  | `/deployed-cms`    | All CMs from the last 100 days |
-| GET  | `/next-version`    | Next available hotfix version. **Auto-cleanup side effect.** |
-| GET  | `/bookings`        | Contents of the local bookings file |
-| POST | `/book`            | Create a booking (validation + duplicate detection) |
+| GET  | `/next-version` `?major=&minor=` | Next available hotfix version for the given release line (or current if omitted). Response also includes `currentMajor`, `currentMinor`, and up to 8 `minorVersions` for the release dropdown. **Auto-cleanup side effect** (deploy- + age-based). Uses `deployed_only=False` so newly-opened release lines with no deploys yet (e.g. brand-new 9.98.x) appear in the dropdown. |
+| GET  | `/bookings` `?major=&minor=` | Local bookings, optionally filtered to a release line |
+| POST | `/book`            | Create a booking. Validates semver, checks fresh next-version against Jira for the submitted `version`'s release line. Returns 400 on invalid input, 409 with `currentNext` if the version is no longer the next available, 500 on Jira failure. |
 | GET  | `/client-versions` | Client × component version matrix |
-| GET  | `/history`         | Merged deployed + booked list for a given minor version |
+| GET  | `/history` `?major=&minor=` | Merged deployed + booked list for a given release line. Response includes `currentMajor`, `currentMinor`, `targetMajor`, `targetMinor`, `minorVersions`. |
+
+Release-line dropdowns auto-discover the top 8 `(major, minor)` pairs across all majors currently active in Jira — so when `10.0.x` starts appearing in real data it shows up automatically alongside `9.99.x`.
 
 ## Current known behaviors — ask before changing
 
@@ -97,8 +102,11 @@ These are the app's current behaviors. Some are limitations, some are deliberate
 ## Common pitfalls
 
 - **Do not overwrite `tests/fixtures/jira/` with real Jira data.** Those files are hand-crafted synthetic fixtures, and the hermetic tests assert exact values from them. Real Jira data belongs in `tests/fixtures/jira-live/`.
+- **When testing endpoint behavior that depends on Jira's JQL filter** (e.g. `status in ("Deployment Completed", "Done")`), simulate the filter in your respx `side_effect` — don't blindly return the same fixture for every JQL. Otherwise you'll fake-pass tests that would fail against real Jira. See `test_dropdown_includes_lines_with_only_in_progress_cms` for the pattern.
+- **Run `node --check static/hotfix-booking.js` after every JS edit.** JS has no compile step and browsers may silently drop a whole IIFE on a syntax error — the pytest suite won't catch this. It burned us once already.
 - **When tests fail, read them.** Test names are descriptive and reveal the intended behavior.
 - **`data/hotfix-bookings.json` is git-ignored** (per `.gitignore` — `data/*` except `.gitkeep`). Don't commit it.
+- **Static assets have cache-busting `?v=N` query strings** in `static/index.html`. Bump the number when making a coordinated JS+HTML change that could otherwise break with stale-JS/new-HTML. `NoCacheStaticFiles` in `app.py` also sends `Cache-Control: no-store` headers as a belt-and-suspenders measure.
 
 ## Style
 
