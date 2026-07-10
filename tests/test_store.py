@@ -22,7 +22,17 @@ class TestLoadBookings:
     def test_reads_valid_file(self, tmp_path: Path) -> None:
         f = tmp_path / "b.json"
         f.write_text(json.dumps({"bookings": [{"id": "HB-1", "version": "9.92.1"}]}))
-        assert load_bookings(f) == {"bookings": [{"id": "HB-1", "version": "9.92.1"}]}
+        # `load_bookings` normalizes the schema — legacy records get default
+        # `status`, `parents`, `originalParents`, and `rebaseHistory` fields.
+        result = load_bookings(f)
+        assert result == {"bookings": [{
+            "id": "HB-1",
+            "version": "9.92.1",
+            "status": "booked",
+            "parents": [],
+            "originalParents": [],
+            "rebaseHistory": [],
+        }]}
 
     def test_malformed_json_raises_not_silently_returns_empty(
         self, tmp_path: Path
@@ -55,7 +65,16 @@ class TestSaveBookings:
         f = tmp_path / "b.json"
         payload = {"bookings": [{"id": "HB-x", "version": "1.2.3", "components": ["A"]}]}
         save_bookings(f, payload)
-        assert load_bookings(f) == payload
+        # Load normalizes the schema; check the payload survives the round-trip
+        # plus the expected default schema fields.
+        loaded = load_bookings(f)
+        assert loaded["bookings"][0]["id"] == "HB-x"
+        assert loaded["bookings"][0]["version"] == "1.2.3"
+        assert loaded["bookings"][0]["components"] == ["A"]
+        assert loaded["bookings"][0]["status"] == "booked"
+        assert loaded["bookings"][0]["parents"] == []
+        assert loaded["bookings"][0]["originalParents"] == []
+        assert loaded["bookings"][0]["rebaseHistory"] == []
 
 
 class TestCreateBooking:
@@ -81,6 +100,9 @@ class TestCreateBooking:
             "bookedByEmail": "",
             "bookedAt": "2026-07-07T12:00:00+00:00",
             "status": "booked",
+            "parents": [],
+            "originalParents": [],
+            "rebaseHistory": [],
         }
         assert data["bookings"] == [booking]
 
@@ -168,6 +190,94 @@ class TestCreateBooking:
             )
         # Nothing added on failure
         assert data["bookings"] == []
+
+
+class TestCreateBookingWithAdditionalPriors:
+    """`create_booking(additional_priors=[...])` lets the routes layer feed in
+    Jira CMs (converted to pseudo-bookings) as extra candidate parents for the
+    dependency graph — without persisting them into the local store.
+    """
+
+    def test_pseudo_prior_becomes_parent_when_it_overlaps(self) -> None:
+        pseudo_cm = {
+            "id": "jira:CM-42",
+            "version": "9.98.12",
+            "components": ["REST"],
+            "clientEnvironments": ["C1"],
+            "bookedAt": "2026-06-01T09:00:00+00:00",
+            "status": "booked",
+        }
+        booking, data = create_booking(
+            {"bookings": []},
+            version="9.98.13",
+            components=["REST"],
+            client_environments=["C1"],
+            booked_by="Alice",
+            now=lambda: "2026-07-15T09:00:00+00:00",
+            id_factory=lambda: "HB-NEW",
+            additional_priors=[pseudo_cm],
+        )
+        assert booking["parents"] == ["jira:CM-42"]
+        assert booking["originalParents"] == ["jira:CM-42"]
+        # The pseudo-prior must NOT be persisted into the local store.
+        assert [b["id"] for b in data["bookings"]] == ["HB-NEW"]
+
+    def test_pseudo_prior_is_ignored_when_it_does_not_overlap(self) -> None:
+        pseudo_cm = {
+            "id": "jira:CM-42",
+            "version": "9.98.12",
+            "components": ["Other"],
+            "clientEnvironments": ["C1"],
+            "bookedAt": "2026-06-01T09:00:00+00:00",
+            "status": "booked",
+        }
+        booking, _ = create_booking(
+            {"bookings": []},
+            version="9.98.13",
+            components=["REST"],
+            client_environments=["C1"],
+            booked_by="Alice",
+            now=lambda: "2026-07-15T09:00:00+00:00",
+            id_factory=lambda: "HB-NEW",
+            additional_priors=[pseudo_cm],
+        )
+        assert booking["parents"] == []
+
+    def test_local_booking_wins_over_pseudo_at_same_version(self) -> None:
+        # If a local booking and a Jira CM both exist at the same version,
+        # the local record is authoritative — only one parent per version.
+        existing_local = {
+            "id": "HB-LOCAL",
+            "version": "9.98.12",
+            "components": ["REST"],
+            "clientEnvironments": ["C1"],
+            "bookedAt": "2026-06-15T09:00:00+00:00",
+            "status": "booked",
+            "parents": [],
+            "originalParents": [],
+            "rebaseHistory": [],
+        }
+        data = {"bookings": [existing_local]}
+        pseudo_cm = {
+            "id": "jira:CM-42",
+            "version": "9.98.12",
+            "components": ["REST"],
+            "clientEnvironments": ["C1"],
+            "bookedAt": "2026-06-01T09:00:00+00:00",  # earlier
+            "status": "booked",
+        }
+        booking, _ = create_booking(
+            data,
+            version="9.98.13",
+            components=["REST"],
+            client_environments=["C1"],
+            booked_by="Alice",
+            now=lambda: "2026-07-15T09:00:00+00:00",
+            id_factory=lambda: "HB-NEW",
+            additional_priors=[pseudo_cm],
+        )
+        # Exactly one parent — the local booking, not the CM twin.
+        assert booking["parents"] == ["HB-LOCAL"]
 
 
 class TestBookingsLock:

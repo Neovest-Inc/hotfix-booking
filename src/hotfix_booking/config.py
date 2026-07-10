@@ -19,9 +19,29 @@ class Settings:
     client_context_id: int
     port: int
     booking_retention_days: int
+    admin_emails: frozenset[str]
+    teams_webhook_url: str = ""
+    app_base_url: str = ""
+    teams_target: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
+        raw_admins = os.getenv("ADMIN_EMAILS", "")
+        admins = frozenset(
+            e.strip().lower() for e in raw_admins.split(",") if e.strip()
+        )
+        # Teams webhook resolution:
+        #   TEAMS_TARGET=<name>  → look up TEAMS_WEBHOOK_URL_<NAME> (uppercased)
+        #   TEAMS_TARGET unset   → notifications disabled
+        # Deliberate policy: if TEAMS_TARGET is set but the matching URL var
+        # is empty, notifications are DISABLED. Refusing to fall through is
+        # safer than accidentally posting test messages to the prod chat.
+        teams_target = os.getenv("TEAMS_TARGET", "").strip().lower()
+        teams_webhook_url = ""
+        if teams_target:
+            teams_webhook_url = os.getenv(
+                f"TEAMS_WEBHOOK_URL_{teams_target.upper()}", ""
+            ).strip()
         return cls(
             jira_base_url=os.getenv("JIRA_BASE_URL", ""),
             jira_email=os.getenv("JIRA_EMAIL", ""),
@@ -30,6 +50,10 @@ class Settings:
             client_context_id=int(os.getenv("CLIENT_CONTEXT_ID", "14042")),
             port=int(os.getenv("PORT", "3001")),
             booking_retention_days=int(os.getenv("BOOKING_RETENTION_DAYS", "180")),
+            admin_emails=admins,
+            teams_webhook_url=teams_webhook_url,
+            app_base_url=os.getenv("APP_BASE_URL", "").strip().rstrip("/"),
+            teams_target=teams_target,
         )
 
 

@@ -8,11 +8,23 @@ Mirrors the four calls made by server/hotfix-booking.js:
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Any
 
 import httpx
 
 from .config import Settings
+
+log = logging.getLogger(__name__)
+
+# Jira's `/rest/api/3/search/jql` endpoint caps each page at ~100 issues
+# regardless of `maxResults` and paginates via `nextPageToken`. Safety cap
+# on total pages guards against runaway loops from bad tokens: 15 pages ×
+# 100 issues = 1500 CMs, well above the ~800 CMs expected at 4 months of
+# coverage (~200 CMs/month) — but low enough to fail fast if something is
+# wrong. Bump if the CM volume genuinely grows past this.
+_MAX_PAGES = 15
+_PAGE_SIZE = 100
 
 _SEARCH_FIELDS = [
     "summary",
@@ -22,6 +34,7 @@ _SEARCH_FIELDS = [
     "customfield_13235",  # Client Environments
     "customfield_10751",  # TargetDeploymentDate
     "reporter",
+    "created",
 ]
 
 
@@ -50,6 +63,10 @@ def _issue_to_cm(issue: dict) -> dict:
         "clientEnvironments": [c.get("value") for c in (f.get("customfield_13235") or [])],
         "targetDeploymentDate": f.get("customfield_10751") or None,
         "reporter": reporter.get("displayName") or None,
+        # Jira's issue creation timestamp — used as `bookedAt` when the CM
+        # is fed into the dependency graph as a pseudo-booking, so it sorts
+        # correctly relative to real bookings on the same release line.
+        "createdAt": f.get("created") or None,
     }
 
 
@@ -75,20 +92,57 @@ class JiraClient:
             self._client = None
 
     async def _search_jql(self, jql: str) -> list[dict]:
+        """Search Jira for issues matching `jql`, paginating until exhausted.
+
+        Jira's enhanced search endpoint caps each page at ~100 issues and
+        signals continuation via `nextPageToken` + `isLast: false`. We
+        accumulate all pages up to `_MAX_PAGES` (safety cap). A missing
+        `isLast` field is treated as terminal — this keeps hermetic
+        synthetic fixtures (which don't include the field) working as
+        single-page responses.
+        """
         assert self._client is not None
-        resp = await self._client.post(
-            "/rest/api/3/search/jql",
-            json={"jql": jql, "fields": _SEARCH_FIELDS, "maxResults": 500},
-        )
-        resp.raise_for_status()
-        issues = (resp.json() or {}).get("issues", []) or []
-        return [_issue_to_cm(i) for i in issues]
+        all_issues: list[dict] = []
+        next_page_token: str | None = None
+        for page_num in range(1, _MAX_PAGES + 1):
+            payload: dict[str, Any] = {
+                "jql": jql,
+                "fields": _SEARCH_FIELDS,
+                "maxResults": _PAGE_SIZE,
+            }
+            if next_page_token is not None:
+                payload["nextPageToken"] = next_page_token
+            resp = await self._client.post("/rest/api/3/search/jql", json=payload)
+            resp.raise_for_status()
+            body = resp.json() or {}
+            all_issues.extend(body.get("issues") or [])
+            # Terminate on explicit isLast=True, or on missing isLast
+            # (single-page fixtures / older API responses).
+            if body.get("isLast", True):
+                break
+            next_page_token = body.get("nextPageToken")
+            if not next_page_token:
+                # Defensive: isLast=false but no token means we can't page
+                # further — treat as terminal to avoid an infinite loop.
+                break
+        else:
+            # for/else: ran the full range without breaking → hit the cap.
+            log.warning(
+                "Jira search-jql pagination hit max pages (%d). "
+                "Some issues may be truncated. JQL: %s",
+                _MAX_PAGES,
+                jql,
+            )
+        return [_issue_to_cm(i) for i in all_issues]
 
     async def fetch_deployed_cms(self, deployed_only: bool = True) -> list[dict]:
         status_filter = (
             'AND status in ("Deployment Completed", "Done")' if deployed_only else ""
         )
-        jql = f"project = CM {status_filter} AND created >= -100d ORDER BY created DESC"
+        # 120-day window covers 4 months (business requirement: some clients
+        # on a 3-month release cadence, may be delayed). At ~200 CMs/month
+        # that's ~800 CMs, comfortably within the pagination safety cap.
+        jql = f"project = CM {status_filter} AND created >= -120d ORDER BY created DESC"
         return await self._search_jql(jql)
 
     async def fetch_cms_by_version(self, major: int, minor: int) -> list[dict]:

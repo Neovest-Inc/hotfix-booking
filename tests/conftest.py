@@ -39,6 +39,9 @@ def settings(bookings_file: Path) -> Settings:
         client_context_id=14042,
         port=3001,
         booking_retention_days=180,
+        admin_emails=frozenset(),
+        teams_webhook_url="",
+        app_base_url="",
     )
     reset_settings_for_tests(s)
     return s

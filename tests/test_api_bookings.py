@@ -283,6 +283,132 @@ class TestPostBook:
         assert r.status_code == 200, r.text
 
 
+class TestPostBookJiraCmParents:
+    """A Jira CM (created outside the app, via the legacy Teams-chat flow)
+    on the same release line with overlapping (client, component) must be
+    picked up as a parent of the new booking. Regression guard for a
+    real-world bug: user booked 9.98.602 through the app but existing CM
+    9.98.12 was silently ignored so the new booking was based on baseline.
+    """
+
+    def _by_version_responder(
+        self, existing_cms: list[dict], next_after: str = "9.98.602"
+    ):
+        """Return a mixed JQL responder that serves `existing_cms` for the
+        by-version query. `next_after` is the highest patch in `existing_cms`
+        so /book computes it + 1 as the fresh next version.
+        """
+        import json as _json
+
+        def _side_effect(request):
+            body = _json.loads(request.content or b"{}")
+            jql = body.get("jql", "")
+            if "fixVersion" in jql:
+                # By-version query for the /book fresh-next check.
+                return httpx.Response(200, json={"issues": existing_cms})
+            # Everything else (deployed_cms broad query) — return empty.
+            return httpx.Response(200, json={"issues": []})
+
+        return _side_effect
+
+    def _cm_issue(self, key: str, version: str, components: list[str],
+                  clients: list[str], created: str = "2026-06-01T09:00:00.000+0000",
+                  status: str = "Deployment Completed") -> dict:
+        return {
+            "key": key,
+            "fields": {
+                "summary": f"Hotfix {version}",
+                "status": {"name": status},
+                "components": [{"name": c} for c in components],
+                "fixVersions": [{"name": version}],
+                "customfield_13235": [{"value": c} for c in clients],
+                "customfield_10751": "2026-06-01",
+                "reporter": {"displayName": "SomeoneElse"},
+                "created": created,
+            },
+        }
+
+    def test_new_booking_picks_up_jira_cm_as_parent(
+        self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
+    ) -> None:
+        """User's real bug: 9.98.12 exists as a Jira CM (never booked through
+        the app) and shares a (client, component) cell with the new 9.98.601
+        booking. The new booking's parents must include `jira:CM-9812`.
+        """
+        existing = [
+            self._cm_issue("CM-9812", "9.98.12",
+                           components=["Alerts"], clients=["CL001 - Fortress"]),
+            self._cm_issue("CM-9800", "9.98.0",
+                           components=["Alerts"], clients=["CL001 - Fortress"],
+                           created="2026-05-01T09:00:00.000+0000"),
+        ]
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            side_effect=self._by_version_responder(existing)
+        )
+        payload = {
+            "version": "9.98.13",  # fresh-next after 9.98.12
+            "components": ["Alerts"],
+            "clientEnvironments": ["CL001 - Fortress"],
+            "bookedBy": "Alice",
+        }
+        r = client.post("/api/hotfix-booking/book", json=payload)
+        assert r.status_code == 200, r.text
+        booking = r.json()["booking"]
+        # 9.98.12 is the most-recent same-cell prior → parent.
+        assert booking["parents"] == ["jira:CM-9812"]
+        assert booking["originalParents"] == ["jira:CM-9812"]
+        # Persisted the same way.
+        stored = read_bookings(bookings_file)
+        assert stored[0]["parents"] == ["jira:CM-9812"]
+
+    def test_no_parent_when_jira_cms_do_not_overlap(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        """CMs on the same release line but touching totally different
+        (client, component) cells must not become parents.
+        """
+        existing = [
+            self._cm_issue("CM-9812", "9.98.12",
+                           components=["OtherComp"], clients=["CL002 - Convex"]),
+        ]
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            side_effect=self._by_version_responder(existing)
+        )
+        payload = {
+            "version": "9.98.13",
+            "components": ["Alerts"],
+            "clientEnvironments": ["CL001 - Fortress"],
+            "bookedBy": "Alice",
+        }
+        r = client.post("/api/hotfix-booking/book", json=payload)
+        assert r.status_code == 200, r.text
+        assert r.json()["booking"]["parents"] == []
+
+    def test_cancelled_jira_cms_are_not_eligible_parents(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        """A CM in Rollback/Rejected/Cancelled is not going to ship, so
+        subsequent bookings must not depend on it.
+        """
+        existing = [
+            self._cm_issue("CM-9812", "9.98.12",
+                           components=["Alerts"], clients=["CL001 - Fortress"],
+                           status="Rollback"),
+        ]
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            side_effect=self._by_version_responder(existing)
+        )
+        payload = {
+            "version": "9.98.13",
+            "components": ["Alerts"],
+            "clientEnvironments": ["CL001 - Fortress"],
+            "bookedBy": "Alice",
+        }
+        r = client.post("/api/hotfix-booking/book", json=payload)
+        assert r.status_code == 200, r.text
+        assert r.json()["booking"]["parents"] == []
+
+
 class TestMalformedBookingsFile:
     """When the JSON store is corrupted, endpoints must surface an error
     instead of silently returning an empty state (which would mask data loss)."""

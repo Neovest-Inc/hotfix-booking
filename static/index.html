@@ -6,7 +6,7 @@
   <title>Hotfix Booking</title>
   <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=8">
+  <link rel="stylesheet" href="/styles.css?v=27">
   <style>
     /* Minimal shell overrides so the standalone page fills the viewport
        without depending on the dashboard's outer layout. */
@@ -16,7 +16,10 @@
       background: #fff;
       border-bottom: 1px solid #e0e0e0;
       padding: 12px 24px;
-      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 16px;
     }
     .app-header h1 {
       margin: 0;
@@ -25,6 +28,8 @@
       color: #1a73e8;
       display: flex; align-items: center; gap: 8px;
     }
+    .app-header .hb-pill-toggle { margin-bottom: 0; justify-self: center; }
+    .app-header .hb-user-box { justify-self: end; }
     .hb-user-box {
       display: flex; align-items: center; gap: 8px;
       font-family: 'Roboto', sans-serif; font-size: 13px;
@@ -97,8 +102,41 @@
     </div>
   </div>
 
+  <!-- Cancel confirmation modal — populated by JS. Two panels:
+       (1) confirm cancel + preview of downstream bookings,
+       (2) after-cancel "notify these people" list + optional CM warning. -->
+  <div id="hbCancelModal" class="hb-modal-overlay" style="display: none;">
+    <div class="hb-modal hb-modal--wide" role="dialog" aria-modal="true" aria-labelledby="hbCancelTitle">
+      <h2 id="hbCancelTitle"><span class="material-icons">cancel</span> Cancel booking</h2>
+      <div id="hbCancelBody"></div>
+    </div>
+  </div>
+
+  <!-- Book-based-on confirmation modal — appears when a new booking would
+       inherit parents from existing overlapping bookings. Populated by JS. -->
+  <div id="hbBookConfirmModal" class="hb-modal-overlay" style="display: none;">
+    <div class="hb-modal hb-modal--wide" role="dialog" aria-modal="true" aria-labelledby="hbBookConfirmTitle">
+      <h2 id="hbBookConfirmTitle"><span class="material-icons">layers</span> This hotfix builds on existing ones</h2>
+      <div id="hbBookConfirmBody"></div>
+    </div>
+  </div>
+
   <header class="app-header">
     <h1><span class="material-icons">book_online</span> Hotfix Booking</h1>
+    <div class="hb-pill-toggle">
+      <button class="pill-btn active" data-view="book">
+        <span class="material-icons">add_circle</span>
+        Book Hotfix
+      </button>
+      <button class="pill-btn" data-view="matrix">
+        <span class="material-icons">grid_on</span>
+        Version Matrix
+      </button>
+      <button class="pill-btn" data-view="history">
+        <span class="material-icons">history</span>
+        Hotfix History
+      </button>
+    </div>
     <div class="hb-user-box" id="hbUserBox">
       <span id="hbUserStatus" class="hb-user-hint">Booking as:</span>
       <input type="email" id="hbUserEmail" placeholder="your.email@neovest.com" autocomplete="email">
@@ -108,26 +146,6 @@
 
   <main class="main-content">
     <div id="hotfix-booking" class="hotfix-booking-view tab-content">
-      <div class="hb-header">
-        <h2><span class="material-icons">book_online</span> Hotfix Booking</h2>
-        <p class="hb-subtitle">Book hotfix versions and track component deployments per client</p>
-      </div>
-
-      <!-- Pill Toggle -->
-      <div class="hb-pill-toggle">
-        <button class="pill-btn active" data-view="book">
-          <span class="material-icons">add_circle</span>
-          Book Hotfix
-        </button>
-        <button class="pill-btn" data-view="matrix">
-          <span class="material-icons">grid_on</span>
-          Version Matrix
-        </button>
-        <button class="pill-btn" data-view="history">
-          <span class="material-icons">history</span>
-          Hotfix History
-        </button>
-      </div>
 
       <!-- Book Hotfix View -->
       <div id="hbBookView" class="hb-subview">
@@ -176,7 +194,7 @@
           </div>
 
           <div class="hb-bookings-list">
-            <h3>Recent Hotfixes <span style="font-weight: normal; font-size: 0.75em; color: #666;">(latest 8 for the selected release, times in ET)</span></h3>
+            <h3>My Hotfixes <span style="font-weight: normal; font-size: 0.75em; color: #666;">(your latest 20 on the selected release &mdash; as booker or Jira CM reporter, times in ET)</span></h3>
             <div id="hbBookingsList"></div>
           </div>
         </div>
@@ -189,6 +207,13 @@
           <p>Loading version matrix...</p>
         </div>
         <div id="hbMatrixContent" class="hb-matrix-content">
+          <div class="hb-matrix-disclaimer" role="note">
+            <span class="material-icons">info</span>
+            <div>
+              <p>This table only shows the CMs (aka HotFix versions) currently in progress.</p>
+              <p>Please use <a href="https://releasetrack.layeronesoftware.com/Reports" target="_blank" rel="noopener noreferrer">this tool</a> to find the latest deployed version.</p>
+            </div>
+          </div>
           <div class="hb-matrix-controls">
             <button id="hbRefreshMatrix" class="hb-refresh-btn">
               <span class="material-icons">refresh</span>
@@ -222,8 +247,8 @@
     </div>
   </main>
 
-  <script src="/utils.js?v=8"></script>
-  <script src="/hotfix-booking.js?v=8"></script>
+  <script src="/utils.js?v=10"></script>
+  <script src="/hotfix-booking.js?v=25"></script>
   <script>
     // Standalone bootstrap — the original dashboard called these on tab-show;
     // here we only have one tab, so run both on DOMContentLoaded.

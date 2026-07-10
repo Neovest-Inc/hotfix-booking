@@ -339,31 +339,50 @@ class TestNextVersion:
 # ---------------------------------------------------------------------------
 # /client-versions
 # ---------------------------------------------------------------------------
+# The Version Matrix intentionally shows only in-flight CMs (work currently
+# moving through the workflow). Already-shipped CMs are excluded — "what is
+# really deployed" is answered by a separate DevOps tool that reads client
+# servers directly.
 class TestClientVersions:
-    def test_builds_matrix_from_deployed(
+    def test_shows_only_in_flight_cms(
         self, client: TestClient, mock_jira: respx.MockRouter
     ) -> None:
+        # search_all fixture has CM-1001/1002/1003 (deployed) + CM-1004
+        # (In Progress). Only CM-1004 should surface in the matrix.
+        mock_jira.post("/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(200, json=load_fixture("search_all.json"))
+        )
+        r = client.get("/api/hotfix-booking/client-versions")
+        assert r.status_code == 200
+        body = r.json()
+
+        # Only the (CL001, DV_Web) cell — where CM-1004 lives — is populated.
+        assert body["clients"] == ["CL001 - Fortress"]
+        assert body["components"] == ["DV_Web"]
+        cell = body["matrix"]["CL001 - Fortress"]["DV_Web"]
+        # No deployed headline in in-flight-only mode.
+        assert cell["version"] is None
+        assert cell["cmKey"] is None
+        assert cell["deployedAt"] is None
+        # In-flight CM appears in the popover list.
+        assert cell["inflight"] == [
+            {"version": "9.94.25", "status": "In Progress", "cmKey": "CM-1004"}
+        ]
+
+    def test_deployed_only_fixture_yields_empty_matrix(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        """Every CM in `search_deployed.json` is Done / Deployment Completed —
+        so with in-flight-only mode there's nothing to show."""
         mock_jira.post("/rest/api/3/search/jql").mock(
             return_value=httpx.Response(200, json=load_fixture("search_deployed.json"))
         )
         r = client.get("/api/hotfix-booking/client-versions")
         assert r.status_code == 200
         body = r.json()
-
-        # CL001 only got 9.94.20 (from CM-1001)
-        assert body["matrix"]["CL001 - Fortress"]["Alerts"]["version"] == "9.94.20"
-        assert body["matrix"]["CL001 - Fortress"]["Alerts"]["cmKey"] == "CM-1001"
-
-        # CL002 got both 9.94.20 (CM-1001) and 9.94.22 (CM-1002) — should keep .22
-        assert body["matrix"]["CL002 - Convex"]["Alerts"]["version"] == "9.94.22"
-        assert body["matrix"]["CL002 - Convex"]["Alerts"]["cmKey"] == "CM-1002"
-
-        # CL003 got only Analytics 9.92.85 (from CM-1003)
-        assert body["matrix"]["CL003 - TPG"]["Analytics"]["version"] == "9.92.85"
-
-        # Sorted metadata
-        assert body["components"] == ["Alerts", "Analytics", "DV_Web"]
-        assert body["clients"] == ["CL001 - Fortress", "CL002 - Convex", "CL003 - TPG"]
+        assert body["matrix"] == {}
+        assert body["clients"] == []
+        assert body["components"] == []
 
     def test_jira_error_yields_500(
         self, client: TestClient, mock_jira: respx.MockRouter
@@ -431,7 +450,10 @@ class TestHistory:
         self, client: TestClient, mock_jira: respx.MockRouter, bookings_file: Path
     ) -> None:
         self._wire_history_calls(mock_jira)
-        # 9.92.85 is in the deployed fixture
+        # 9.92.85 is in the deployed fixture. When a booking exists for that
+        # same version, we now emit a single UNIFIED row carrying both the CM
+        # fields (cmKey) and the booking fields (id, bookingStatus) instead
+        # of duplicating the version across two rows.
         write_bookings(bookings_file, [
             {"id": "HB-dup", "version": "9.92.85", "components": ["X"],
              "clientEnvironments": ["Y"], "bookedBy": "Z",
@@ -441,7 +463,10 @@ class TestHistory:
         assert r.status_code == 200
         entries = [h for h in r.json()["hotfixes"] if h["version"] == "9.92.85"]
         assert len(entries) == 1
-        assert entries[0]["type"] == "deployed"
+        row = entries[0]
+        assert row["cmKey"]  # CM data present
+        assert row["id"] == "HB-dup"  # booking data present
+        assert row["type"] == "booked"
 
     def test_jira_error_yields_500(
         self, client: TestClient, mock_jira: respx.MockRouter
@@ -450,3 +475,153 @@ class TestHistory:
         r = client.get("/api/hotfix-booking/history")
         assert r.status_code == 500
         assert r.json() == {"error": "Failed to fetch hotfix history"}
+
+
+# ---------------------------------------------------------------------------
+# _search_jql pagination
+# ---------------------------------------------------------------------------
+# Jira's /rest/api/3/search/jql endpoint caps each page at ~100 issues and
+# uses `nextPageToken` for pagination. The client must loop until `isLast`
+# is true (or the token is missing), concatenating issues across pages.
+# A hard cap of 15 pages protects against runaway loops from bad tokens.
+class TestSearchJqlPagination:
+    def test_paginates_across_multiple_pages(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        """Two-page response: both pages' issues should appear concatenated."""
+        page1 = {
+            "issues": [{
+                "key": "CM-9001",
+                "fields": {
+                    "summary": "page 1", "status": {"name": "Done"},
+                    "components": [{"name": "Alerts"}],
+                    "fixVersions": [{"name": "9.94.10"}],
+                    "customfield_13235": [{"value": "CL001 - Fortress"}],
+                    "customfield_10751": "2026-05-01",
+                    "reporter": {"displayName": "Alice"},
+                },
+            }],
+            "nextPageToken": "TOKEN_PAGE_2",
+            "isLast": False,
+        }
+        page2 = {
+            "issues": [{
+                "key": "CM-9002",
+                "fields": {
+                    "summary": "page 2", "status": {"name": "Done"},
+                    "components": [{"name": "Alerts"}],
+                    "fixVersions": [{"name": "9.94.11"}],
+                    "customfield_13235": [{"value": "CL002 - Convex"}],
+                    "customfield_10751": "2026-05-02",
+                    "reporter": {"displayName": "Bob"},
+                },
+            }],
+            "isLast": True,
+        }
+
+        def _responder(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content or b"{}")
+            if body.get("nextPageToken") == "TOKEN_PAGE_2":
+                return httpx.Response(200, json=page2)
+            return httpx.Response(200, json=page1)
+
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_responder)
+
+        r = client.get("/api/hotfix-booking/deployed-cms")
+        assert r.status_code == 200
+        keys = [cm["key"] for cm in r.json()["cms"]]
+        assert keys == ["CM-9001", "CM-9002"], (
+            "Both pages should be concatenated; got only page 1 means pagination is broken."
+        )
+
+    def test_stops_at_max_pages_safety_cap(
+        self, client: TestClient, mock_jira: respx.MockRouter, caplog
+    ) -> None:
+        """Runaway `isLast: false` responses must terminate at MAX_PAGES=15."""
+        call_count = {"n": 0}
+
+        def _endless_responder(request: httpx.Request) -> httpx.Response:
+            call_count["n"] += 1
+            return httpx.Response(200, json={
+                "issues": [{
+                    "key": f"CM-{call_count['n']:04d}",
+                    "fields": {
+                        "summary": f"page {call_count['n']}",
+                        "status": {"name": "Done"},
+                        "components": [{"name": "Alerts"}],
+                        "fixVersions": [{"name": "9.94.10"}],
+                        "customfield_13235": [{"value": "CL001 - Fortress"}],
+                        "customfield_10751": None,
+                        "reporter": {"displayName": "X"},
+                    },
+                }],
+                "nextPageToken": f"TOKEN_{call_count['n']}",
+                "isLast": False,
+            })
+
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_endless_responder)
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            r = client.get("/api/hotfix-booking/deployed-cms")
+
+        assert r.status_code == 200
+        assert call_count["n"] == 15, (
+            f"Expected exactly 15 pages before hitting the safety cap; got {call_count['n']}."
+        )
+        assert any("max" in rec.message.lower() and "page" in rec.message.lower()
+                   for rec in caplog.records), (
+            "Expected a WARNING log when the pagination cap is hit."
+        )
+
+    def test_single_page_when_isLast_missing(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        """Legacy fixture without `isLast`/`nextPageToken` must terminate cleanly
+        after one page (backwards-compat for hermetic synthetic fixtures)."""
+        call_count = {"n": 0}
+
+        def _responder(request: httpx.Request) -> httpx.Response:
+            call_count["n"] += 1
+            return httpx.Response(200, json=load_fixture("search_all.json"))
+
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_responder)
+
+        r = client.get("/api/hotfix-booking/deployed-cms")
+        assert r.status_code == 200
+        assert call_count["n"] == 1, (
+            f"Response without `isLast` should be treated as terminal; got {call_count['n']} calls."
+        )
+
+
+# ---------------------------------------------------------------------------
+# JQL time window
+# ---------------------------------------------------------------------------
+class TestJqlTimeWindow:
+    """The `created >= -Nd` window sets how far back the matrix and next-version
+    look. Must cover at least 4 months (~120 days) to catch clients on a
+    3-month release cadence who may be delayed."""
+
+    def test_fetch_deployed_uses_at_least_120_day_window(
+        self, client: TestClient, mock_jira: respx.MockRouter
+    ) -> None:
+        captured_jql: list[str] = []
+
+        def _responder(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content or b"{}")
+            captured_jql.append(body.get("jql", ""))
+            return httpx.Response(200, json=load_fixture("search_all.json"))
+
+        mock_jira.post("/rest/api/3/search/jql").mock(side_effect=_responder)
+
+        r = client.get("/api/hotfix-booking/client-versions")
+        assert r.status_code == 200
+        assert captured_jql, "Expected at least one search-jql POST"
+        # Extract the -Nd bound from the JQL
+        import re
+        match = re.search(r"created\s*>=\s*-(\d+)d", captured_jql[0])
+        assert match, f"Expected `created >= -Nd` in JQL; got: {captured_jql[0]}"
+        days = int(match.group(1))
+        assert days >= 120, (
+            f"Time window is {days}d; must be >= 120d to cover 4 months per business requirement."
+        )

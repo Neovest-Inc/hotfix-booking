@@ -21,7 +21,35 @@ class Booking(BaseModel):
     bookedBy: str
     bookedAt: str
     status: str
+    parents: list[str] = Field(default_factory=list)
+    originalParents: list[str] = Field(default_factory=list)
+    rebaseHistory: list[dict] = Field(default_factory=list)
 
 
 class BookingsResponse(BaseModel):
     bookings: list[Booking] = Field(default_factory=list)
+
+
+class CancelRequest(BaseModel):
+    bookingId: str
+    cancelledByEmail: str
+
+
+class AffectedChild(BaseModel):
+    id: str
+    version: str
+    bookedBy: str
+    bookedByEmail: str
+    previousParentVersions: list[str] = Field(default_factory=list)
+    newParentVersions: list[str] = Field(default_factory=list)
+
+
+class ActiveCmWarning(BaseModel):
+    cmKey: str
+    status: str
+
+
+class CancelResponse(BaseModel):
+    cancelled: dict
+    affected: list[AffectedChild] = Field(default_factory=list)
+    activeCmWarning: ActiveCmWarning | None = None

@@ -11,6 +11,18 @@ from typing import Any
 from .versioning import compare_versions, is_semver, parse_version
 
 
+# Jira CM statuses that mean the change is actually LIVE in production. Only
+# these should trigger deploy-based booking cleanup, and only these should let
+# a deployed row "swallow" a local booking during merge — a CM in "Approved",
+# "Ready", "In Progress" etc. is still an in-flight change and the local
+# booking remains the source of truth for cancellation.
+_DEPLOYED_STATUSES = frozenset({"done", "deployment completed"})
+
+
+def _is_deployed_status(name: str | None) -> bool:
+    return (name or "").strip().lower() in _DEPLOYED_STATUSES
+
+
 def derive_minor_versions(
     recent_cms: list[dict], count: int = 8
 ) -> tuple[int, int, list[dict]]:
@@ -51,59 +63,117 @@ def merge_hotfixes(
 ) -> list[dict]:
     """Merge deployed CMs (matching major.minor) with pending bookings.
 
-    Booking is included only if its version isn't already in the deployed list.
-    Sorted by version desc.
+    Semantics: ONE row per version. The Jira CM and the local booking are the
+    same thing — the CM is the deployment ticket for a hotfix that was first
+    booked in the app.
 
-    Deployed entry shape:  { version, type:'deployed', cmKey, summary, status, components,
-                             clientEnvironments, deployedAt, reporter }
-    Booked   entry shape:  { version, type:'booked', cmKey:None, summary:None, status:'Booked',
-                             components, clientEnvironments, bookedAt, bookedBy, reporter=bookedBy }
+      - CM only (no booking)        → deployed row (no Cancel button)
+      - Booking only (no CM yet)    → booked row (Cancel button if allowed)
+      - Both CM and booking exist   → single UNIFIED row that carries the CM
+        fields (cmKey, deployedAt, Jira status) AND the booking fields (id,
+        parents, rebaseHistory) so the user still sees the CM link + status
+        while retaining the ability to cancel the booking. `type` stays
+        "booked" so the client renders the basis line, Rebased chip, and
+        Cancel button just like a booking-only row.
+
+    Sorted descending by version.
     """
     hotfixes: list[dict] = []
+
+    # Version -> booking lookup (one booking per version at most).
+    booking_by_version: dict[str, dict] = {}
+    for b in bookings:
+        v = b.get("version")
+        if v:
+            booking_by_version[v] = b
+
+    covered_by_unified: set[str] = set()
 
     for cm in version_cms:
         for version in cm.get("fixVersions", []) or []:
             if not is_semver(version):
                 continue
             v = parse_version(version)
-            if v.major == major and v.minor == target_minor:
-                hotfixes.append(
-                    {
-                        "version": version,
-                        "type": "deployed",
-                        "cmKey": cm.get("key"),
-                        "summary": cm.get("summary"),
-                        "status": cm.get("status"),
-                        "components": cm.get("components", []),
-                        "clientEnvironments": cm.get("clientEnvironments", []),
-                        "deployedAt": cm.get("targetDeploymentDate"),
-                        "reporter": cm.get("reporter"),
-                    }
-                )
+            if v.major != major or v.minor != target_minor:
+                continue
+
+            booking = booking_by_version.get(version)
+            if booking is not None:
+                # UNIFIED row — CM data + booking data. Type stays 'booked'
+                # so the client renders Cancel + basis + Rebased chip.
+                status = booking.get("status", "booked")
+                is_cancelled = status == "cancelled"
+                hotfixes.append({
+                    "version": version,
+                    "type": "booked",
+                    "cmKey": cm.get("key"),
+                    "summary": cm.get("summary"),
+                    "status": cm.get("status") or ("Cancelled" if is_cancelled else "Booked"),
+                    "cmStatus": cm.get("status"),
+                    "components": cm.get("components", []) or booking.get("components", []),
+                    "clientEnvironments": cm.get("clientEnvironments", []) or booking.get("clientEnvironments", []),
+                    "deployedAt": cm.get("targetDeploymentDate"),
+                    "reporter": cm.get("reporter") or booking.get("bookedBy"),
+                    "bookedAt": booking.get("bookedAt"),
+                    "bookedBy": booking.get("bookedBy"),
+                    "bookedByEmail": booking.get("bookedByEmail"),
+                    "id": booking.get("id"),
+                    "parents": booking.get("parents", []),
+                    "originalParents": booking.get("originalParents", []),
+                    "rebaseHistory": booking.get("rebaseHistory", []),
+                    "bookingStatus": status,
+                    "cancelledAt": booking.get("cancelledAt"),
+                    "cancelledBy": booking.get("cancelledBy"),
+                    "cancelledByEmail": booking.get("cancelledByEmail"),
+                    "deployedInJira": True,
+                })
+                covered_by_unified.add(version)
+            else:
+                hotfixes.append({
+                    "version": version,
+                    "type": "deployed",
+                    "cmKey": cm.get("key"),
+                    "summary": cm.get("summary"),
+                    "status": cm.get("status"),
+                    "components": cm.get("components", []),
+                    "clientEnvironments": cm.get("clientEnvironments", []),
+                    "deployedAt": cm.get("targetDeploymentDate"),
+                    "reporter": cm.get("reporter"),
+                })
 
     for booking in bookings:
         v = parse_version(booking.get("version", ""))
         if v.major != major or v.minor != target_minor:
             continue
-        already_deployed = any(
-            h["version"] == booking["version"] and h["type"] == "deployed" for h in hotfixes
-        )
-        if already_deployed:
+        version = booking["version"]
+        # Already emitted as a unified row above.
+        if version in covered_by_unified:
             continue
-        hotfixes.append(
-            {
-                "version": booking["version"],
-                "type": "booked",
-                "cmKey": None,
-                "summary": None,
-                "status": "Booked",
-                "components": booking.get("components", []),
-                "clientEnvironments": booking.get("clientEnvironments", []),
-                "bookedAt": booking.get("bookedAt"),
-                "bookedBy": booking.get("bookedBy"),
-                "reporter": booking.get("bookedBy"),
-            }
-        )
+        # Booking-only row (no CM in Jira yet).
+        status = booking.get("status", "booked")
+        is_cancelled = status == "cancelled"
+        hotfixes.append({
+            "version": version,
+            "type": "booked",
+            "cmKey": None,
+            "summary": None,
+            "status": "Cancelled" if is_cancelled else "Booked",
+            "components": booking.get("components", []),
+            "clientEnvironments": booking.get("clientEnvironments", []),
+            "bookedAt": booking.get("bookedAt"),
+            "bookedBy": booking.get("bookedBy"),
+            "bookedByEmail": booking.get("bookedByEmail"),
+            "reporter": booking.get("bookedBy"),
+            "id": booking.get("id"),
+            "parents": booking.get("parents", []),
+            "originalParents": booking.get("originalParents", []),
+            "rebaseHistory": booking.get("rebaseHistory", []),
+            "bookingStatus": status,
+            "cancelledAt": booking.get("cancelledAt"),
+            "cancelledBy": booking.get("cancelledBy"),
+            "cancelledByEmail": booking.get("cancelledByEmail"),
+            "deployedInJira": False,
+        })
 
     # Sort descending by version
     hotfixes.sort(key=cmp_to_key(lambda a, b: compare_versions(b["version"], a["version"])))
@@ -168,9 +238,17 @@ def calculate_next_version(
 
 
 def deployed_versions(deployed_cms: list[dict]) -> set[str]:
-    """Set of semver fixVersions from deployed CMs (used for booking auto-cleanup)."""
+    """Set of semver fixVersions from CMs whose status is actually deployed.
+
+    Only "Done" / "Deployment Completed" statuses count. Callers passing in a
+    mixed-status list (e.g. `/next-version` fetches all recent CMs to feed the
+    release dropdown) can safely reuse this for cleanup — a CM in "Approved"
+    or "In Progress" won't cause the local booking to be purged prematurely.
+    """
     out: set[str] = set()
     for cm in deployed_cms:
+        if not _is_deployed_status(cm.get("status")):
+            continue
         for v in cm.get("fixVersions", []) or []:
             if is_semver(v):
                 out.add(v)
@@ -187,8 +265,14 @@ def cleanup_bookings(
     """Partition bookings into (kept, removed).
 
     A booking is removed if EITHER:
-      - its version is present in `deployed` (Jira has confirmed the deploy), OR
+      - its version is present in `deployed` (Jira has confirmed the deploy)
+        AND its status is NOT `cancelled`, OR
       - its `bookedAt` is older than `now - retention_days` (abandoned)
+
+    Cancelled records are exempt from the deploy-based branch — they stay as
+    audit tombstones until they age out. This lets the UI keep showing a
+    "Cancelled locally, CM active in Jira" warning on rows where the two
+    sources disagree.
 
     Bookings with missing or unparseable `bookedAt` are kept (never expire from age).
     """
@@ -198,7 +282,8 @@ def cleanup_bookings(
 
     for b in bookings:
         version = b.get("version")
-        if version in deployed:
+        is_cancelled = b.get("status") == "cancelled"
+        if version in deployed and not is_cancelled:
             removed.append(b)
             continue
 

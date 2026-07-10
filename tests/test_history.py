@@ -109,10 +109,52 @@ class TestMergeHotfixes:
         assert result[0]["reporter"] == "Dashboard User"  # reporter == bookedBy for bookings
 
     def test_booking_hidden_when_deployed(self) -> None:
+        # Unified single row when both CM and booking exist for the same version.
         cms = [_cm("CM-1", ["9.92.19"])]
         result = merge_hotfixes(cms, [_booking("9.92.19")], major=9, target_minor=92)
         assert len(result) == 1
-        assert result[0]["type"] == "deployed"
+        # Row carries both the CM fields (cmKey, deployedAt) AND the booking
+        # fields (id, parents, rebaseHistory) so the client can render the
+        # CM link and the Cancel button on the same row.
+        assert result[0]["cmKey"] == "CM-1"
+        assert result[0]["id"] is not None
+        assert result[0]["type"] == "booked"
+
+    def test_booking_kept_when_cm_is_not_actually_deployed(self) -> None:
+        # Single unified row (was two rows in an earlier iteration).
+        cms = [_cm("CM-1", ["9.98.1"], status="DL Approved")]
+        result = merge_hotfixes(cms, [_booking("9.98.1")], major=9, target_minor=98)
+        assert len(result) == 1
+        row = result[0]
+        assert row["type"] == "booked"
+        assert row["cmKey"] == "CM-1"
+        assert row["status"] == "DL Approved"  # Jira's status wins for display
+        assert row["deployedInJira"] is True
+
+    def test_booking_kept_when_cm_is_in_progress(self) -> None:
+        cms = [_cm("CM-1", ["9.98.5"], status="In Progress")]
+        result = merge_hotfixes(cms, [_booking("9.98.5")], major=9, target_minor=98)
+        assert len(result) == 1
+        assert result[0]["cmKey"] == "CM-1"
+        assert result[0]["status"] == "In Progress"
+
+    def test_cancelled_booking_shown_even_when_deployed(self) -> None:
+        # Regression guard: cancelled bookings unify with the CM row and
+        # the row carries both the CM key AND the cancellation metadata.
+        cms = [_cm("CM-1", ["9.92.19"], status="Done")]
+        cancelled = {
+            **_booking("9.92.19"),
+            "status": "cancelled",
+            "cancelledBy": "Alice",
+            "cancelledByEmail": "alice@x",
+            "cancelledAt": "2026-07-08T10:00:00+00:00",
+        }
+        result = merge_hotfixes(cms, [cancelled], major=9, target_minor=92)
+        assert len(result) == 1
+        row = result[0]
+        assert row["cmKey"] == "CM-1"
+        assert row["bookingStatus"] == "cancelled"
+        assert row["cancelledBy"] == "Alice"
 
     def test_filters_by_major_minor(self) -> None:
         cms = [
@@ -208,11 +250,24 @@ class TestCalculateNextVersionWithMinorFilter:
 
 class TestDeployedVersions:
     def test_returns_semver_set(self) -> None:
+        # deployed_versions filters by CM status — only "Done" /
+        # "Deployment Completed" are considered actually deployed.
         cms = [
-            {"fixVersions": ["9.92.10", "not-semver"]},
-            {"fixVersions": ["9.93.1", "9.92.10"]},
+            {"status": "Done", "fixVersions": ["9.92.10", "not-semver"]},
+            {"status": "Deployment Completed", "fixVersions": ["9.93.1", "9.92.10"]},
         ]
         assert deployed_versions(cms) == {"9.92.10", "9.93.1"}
 
     def test_missing_fixversions_key(self) -> None:
-        assert deployed_versions([{}]) == set()
+        assert deployed_versions([{"status": "Done"}]) == set()
+
+    def test_non_deployed_statuses_excluded(self) -> None:
+        # An "Approved" or "In Progress" CM must NOT trigger booking cleanup —
+        # only actually-deployed CMs (Done / Deployment Completed) do.
+        cms = [
+            {"status": "DL Approved", "fixVersions": ["9.98.1"]},
+            {"status": "In Progress", "fixVersions": ["9.98.2"]},
+            {"status": "Open", "fixVersions": ["9.98.3"]},
+            {"status": "Done", "fixVersions": ["9.98.4"]},
+        ]
+        assert deployed_versions(cms) == {"9.98.4"}

@@ -29,6 +29,11 @@ SEARCH_FIELDS = [
     "reporter",
 ]
 
+# Mirror the client-side pagination bounds so captured fixtures represent
+# the full result set (Jira caps each page at ~100 issues).
+_MAX_PAGES = 15
+_PAGE_SIZE = 100
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "tests" / "fixtures" / "jira-live"
 
@@ -43,12 +48,34 @@ def auth_headers(email: str, token: str) -> dict[str, str]:
 
 
 def search_jql(client: httpx.Client, jql: str) -> dict:
-    resp = client.post(
-        "/rest/api/3/search/jql",
-        json={"jql": jql, "fields": SEARCH_FIELDS, "maxResults": 500},
-    )
-    resp.raise_for_status()
-    return resp.json()
+    """Paginate through /search/jql and return a synthesised response
+    containing every issue. Top-level `isLast` is forced to true; the
+    tail `nextPageToken` (if any) is dropped so downstream tests can
+    treat the fixture as terminal without hitting live Jira again."""
+    all_issues: list[dict] = []
+    next_page_token: str | None = None
+    for _ in range(_MAX_PAGES):
+        payload: dict[str, object] = {
+            "jql": jql,
+            "fields": SEARCH_FIELDS,
+            "maxResults": _PAGE_SIZE,
+        }
+        if next_page_token is not None:
+            payload["nextPageToken"] = next_page_token
+        resp = client.post("/rest/api/3/search/jql", json=payload)
+        resp.raise_for_status()
+        body = resp.json() or {}
+        all_issues.extend(body.get("issues") or [])
+        if body.get("isLast", True):
+            break
+        next_page_token = body.get("nextPageToken")
+        if not next_page_token:
+            break
+    else:
+        print(
+            f"  WARN: pagination cap ({_MAX_PAGES} pages) hit — fixture may be truncated."
+        )
+    return {"issues": all_issues, "isLast": True}
 
 
 def write(out_dir: Path, name: str, data: object) -> None:
@@ -87,18 +114,18 @@ def main() -> int:
         r.raise_for_status()
         write(out_dir, "client_options.json", r.json())
 
-        print("Fetching deployed CMs (last 100d)...")
+        print("Fetching deployed CMs (last 120d)...")
         deployed = search_jql(
             client,
             'project = CM AND status in ("Deployment Completed", "Done") '
-            "AND created >= -100d ORDER BY created DESC",
+            "AND created >= -120d ORDER BY created DESC",
         )
         write(out_dir, "search_deployed.json", deployed)
 
-        print("Fetching all CMs (last 100d)...")
+        print("Fetching all CMs (last 120d)...")
         all_cms = search_jql(
             client,
-            "project = CM AND created >= -100d ORDER BY created DESC",
+            "project = CM AND created >= -120d ORDER BY created DESC",
         )
         write(out_dir, "search_all.json", all_cms)
 

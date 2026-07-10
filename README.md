@@ -19,7 +19,7 @@ Open the app in a browser and you'll see three tabs:
 - The **Next Available Version** badge shows the next hotfix number for that release line, calculated from what's already deployed in Jira plus what other people have already booked in this app.
 - Pick one or more **components** and one or more **client environments** from searchable dropdowns.
 - Click **Book Hotfix Version** to reserve that number for your work. The booking is attributed to whoever you signed in as.
-- **Recent Hotfixes** (below the form) shows the 8 latest hotfixes for the selected release — a mix of what's already deployed and what's currently booked, with expandable tag lists for long component/client lists. This refreshes automatically every 30 seconds while the tab is visible.
+- **My Hotfixes** (below the form) shows your latest 8 hotfixes on the selected release — either ones you booked in this app or ones where you're the Jira reporter of the CM. Same expandable tag lists as before. Refreshes automatically every 30 seconds while the tab is visible. See the **Hotfix History** tab for the release-wide view.
 
 ### 2. Version Matrix
 A grid showing, for every **client** × every **component**, the highest version currently deployed. Handy for answering "what version of X is client Y running?" at a glance. Hover any cell to see the underlying Jira CM ticket and deployment date.

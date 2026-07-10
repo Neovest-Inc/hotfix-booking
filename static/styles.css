@@ -2856,32 +2856,6 @@ body {
   padding: 24px;
 }
 
-.hb-header {
-  margin-bottom: 24px;
-}
-
-.hb-header h2 {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-family: 'Google Sans', sans-serif;
-  font-size: 24px;
-  font-weight: 500;
-  color: #202124;
-  margin: 0;
-}
-
-.hb-header h2 .material-icons {
-  color: #1a73e8;
-  font-size: 28px;
-}
-
-.hb-subtitle {
-  color: #5f6368;
-  font-size: 14px;
-  margin: 8px 0 0 40px;
-}
-
 /* Pill Toggle - Reuse releases pattern */
 .hb-pill-toggle {
   display: flex;
@@ -2907,7 +2881,11 @@ body {
 .hb-book-content {
   display: grid;
   grid-template-columns: 400px 1fr;
+  grid-template-rows: minmax(0, 1fr);
   gap: 32px;
+  align-items: stretch;
+  height: calc(100vh - 180px);
+  min-height: 420px;
 }
 
 .hb-booking-form {
@@ -2915,6 +2893,8 @@ body {
   border-radius: 12px;
   padding: 24px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .hb-version-display {
@@ -3086,6 +3066,18 @@ body {
   text-overflow: ellipsis;
 }
 
+/* "All Environments" pseudo-item — sits at the top of the client dropdown
+   and toggles every real client at once. Bold label + divider anchor it as
+   a shortcut, not a regular client env. */
+.hb-dropdown-item--all {
+  font-weight: 600;
+  border-bottom: 1px solid #e0e0e0;
+  color: #202124;
+}
+.hb-dropdown-item--all .hb-item-label {
+  letter-spacing: 0.1px;
+}
+
 /* Book Button */
 .hb-book-btn {
   display: flex;
@@ -3125,6 +3117,9 @@ body {
   border-radius: 12px;
   padding: 20px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .hb-bookings-list h3 {
@@ -3133,10 +3128,12 @@ body {
   font-weight: 500;
   color: #202124;
   margin: 0 0 16px 0;
+  flex-shrink: 0;
 }
 
 #hbBookingsList {
-  max-height: 300px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -3174,6 +3171,21 @@ body {
   white-space: nowrap;
 }
 
+/* CM link chip sitting next to the version in My Hotfixes rows.
+   Reuses `.item-key` colour + weight; this tunes the size and adds a
+   subtle bracket so "9.98.42 CM-11702" reads as one visual unit without
+   losing the fact that CM-11702 is a link. */
+.hb-booking-cm-link {
+  font-size: 12px;
+  white-space: nowrap;
+  /* Pulled tight against the version to signal "these belong together". */
+  margin-left: -4px;
+}
+.hb-booking-cm-link::before { content: '('; color: #80868b; margin-right: 1px; }
+.hb-booking-cm-link::after  { content: ')'; color: #80868b; margin-left: 1px; }
+/* Fallback plain style when the Jira base URL wasn't loaded yet (rare). */
+.hb-booking-cm-link--plain { color: #5f6368; font-weight: 500; }
+
 .hb-booking-when {
   margin-left: auto;
   font-size: 12px;
@@ -3209,7 +3221,7 @@ body {
   color: #5f6368;
 }
 
-/* Interactive "+N more" / "Show less" pill inside a Recent Hotfixes tag row. */
+/* Interactive "+N more" / "Show less" pill inside a My Hotfixes tag row. */
 .hb-tags-toggle {
   border: none;
   cursor: pointer;
@@ -3226,6 +3238,252 @@ body {
   gap: 6px;
 }
 
+/* ------------------------------------------------------------------------
+   Cancel / Rebase support
+   ------------------------------------------------------------------------ */
+
+/* Strikethrough on a cancelled booking's version number (both My Hotfixes
+   and Hotfix History) so it reads as "gone" at a glance. */
+.hb-booking-version--cancelled {
+  text-decoration: line-through;
+  color: #80868b;
+}
+
+/* Basis / cancelled meta lines rendered under the tags in My Hotfixes. */
+.hb-basis-line {
+  font-size: 12px;
+  color: #5f6368;
+  margin-top: 4px;
+  font-style: italic;
+}
+.hb-cancelled-meta {
+  font-size: 12px;
+  color: #c5221f;
+  margin-top: 2px;
+}
+
+/* Cancelled row treatment — subtle background so it visually separates from
+   active bookings without shouting. */
+.hb-booking-item--cancelled {
+  background: #fdf1f0;
+  border-left: 3px solid #d93025;
+  padding-left: 9px;
+  border-radius: 4px;
+}
+
+/* Small pill chips used next to the status badge for extra state markers. */
+.hb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  font-family: inherit;
+  cursor: default;
+}
+.hb-chip .material-icons {
+  font-size: 14px;
+}
+.hb-chip--warning {
+  background: #fef7e0;
+  color: #b06000;
+  border-color: #fde69e;
+}
+.hb-chip--rebased {
+  background: #fce4ec;
+  color: #ad1457;
+  border-color: #f8bbd9;
+  cursor: pointer;
+}
+.hb-chip--rebased:hover {
+  background: #f8bbd9;
+}
+
+/* Popover attached to a Rebased chip — lists the rebase events for that
+   booking. Absolutely positioned relative to its containing row/cell so it
+   floats above the surrounding UI. */
+.hb-booking-item, .hb-history-table tr {
+  position: relative;
+}
+.hb-rebase-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  min-width: 340px;
+  max-width: 480px;
+  background: #fff;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  font-size: 13px;
+}
+.hb-rebase-events {
+  margin: 0;
+  padding-left: 20px;
+}
+.hb-rebase-events li {
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+.hb-rebase-events li:last-child { margin-bottom: 0; }
+.hb-rebase-when {
+  color: #80868b;
+  font-size: 11px;
+  margin-left: 6px;
+}
+
+/* Cancel button — outlined pill with icon + text.
+   Muted at rest so it doesn't compete with content, but persistently visible
+   (no hover-to-reveal) so a booker glancing at a row sees the action.
+   Turns clearly destructive on hover / focus. */
+.hb-cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px 3px 6px;
+  margin-left: 6px;
+  border: 1px solid #dadce0;
+  border-radius: 14px;
+  background: transparent;
+  color: #5f6368;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+.hb-cancel-btn:hover,
+.hb-cancel-btn:focus-visible {
+  color: #d93025;
+  background: #fce8e6;
+  border-color: #f5c6cb;
+  outline: none;
+}
+.hb-cancel-btn .material-icons { font-size: 14px; }
+.hb-cancel-btn-text { white-space: nowrap; }
+
+/* Cancel confirmation modal + notify-users panel. */
+.hb-modal--wide {
+  max-width: 560px;
+}
+#hbCancelBody p { color: #3c4043; font-size: 14px; line-height: 1.5; margin: 8px 0; }
+.hb-cancel-affected {
+  list-style: none;
+  padding: 8px 0;
+  margin: 8px 0;
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid #e0e0e0;
+  border-bottom: 1px solid #e0e0e0;
+}
+.hb-cancel-affected li {
+  padding: 10px 4px;
+  border-bottom: 1px dashed #e8eaed;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.hb-cancel-affected li:last-child { border-bottom: none; }
+.hb-cancel-email { color: #5f6368; }
+.hb-cancel-hint { color: #80868b; font-size: 12px; }
+.hb-cancel-affected-empty {
+  color: #5f6368;
+  font-style: italic;
+  padding: 12px 0;
+}
+.hb-cancel-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+/* Specificity: `.hb-modal button` in index.html is (0,1,1); we need (0,2,0)+
+   so scope every button rule via `.hb-modal ...`. */
+.hb-modal .hb-cancel-buttons button {
+  margin: 0;
+  width: auto;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.hb-modal .hb-cancel-keep {
+  background: #f1f3f4;
+  color: #3c4043;
+}
+.hb-modal .hb-cancel-keep:hover { background: #e0e2e5; }
+/* Neutral at rest like .hb-cancel-keep, but turns tomato on hover so the
+   destructive dismiss on the book-confirmation modal reads clearly as
+   "abandon this booking flow". Distinct from `.hb-cancel-confirm` (also
+   tomato) which is the destructive PRIMARY action of the cancel modal.
+   NB: chained through `.hb-cancel-buttons` for extra specificity — the
+   inline `.hb-modal button:hover:not(:disabled) { background:#1765cc }`
+   rule in index.html is (0,3,1) and would otherwise override us. */
+.hb-modal .hb-cancel-buttons .hb-cancel-abort {
+  background: #f1f3f4;
+  color: #3c4043;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.hb-modal .hb-cancel-buttons .hb-cancel-abort:hover {
+  background: #ff6347;
+  color: #fff;
+}
+.hb-modal .hb-cancel-confirm {
+  background: #ff6347;
+  color: #fff;
+}
+.hb-modal .hb-cancel-confirm:hover:not(:disabled) { background: #e5533d; }
+.hb-modal .hb-cancel-confirm:disabled { background: #ffb3a3; cursor: not-allowed; }
+/* Positive-action button used by the book-based-on confirmation modal.
+   Same shape as the cancel/keep buttons, blue (like the header + Book btn). */
+.hb-modal .hb-confirm-book {
+  background: #1a73e8;
+  color: #fff;
+}
+.hb-modal .hb-confirm-book:hover:not(:disabled) { background: #1765cc; }
+.hb-modal .hb-confirm-book:disabled { background: #a8c5f0; cursor: not-allowed; }
+.hb-modal .hb-confirm-book .material-icons { font-size: 16px; }
+.hb-modal .hb-cancel-copy {
+  background: #34a853;
+  color: #fff;
+}
+.hb-modal .hb-cancel-copy:hover { background: #2d9048; }
+.hb-modal .hb-cancel-copy .material-icons { font-size: 16px; }
+.hb-cancel-warning {
+  background: #fef7e0;
+  border: 1px solid #fde69e;
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  gap: 10px;
+  color: #b06000;
+  font-size: 13px;
+  line-height: 1.4;
+  margin-bottom: 12px;
+}
+.hb-cancel-warning .material-icons { font-size: 20px; flex-shrink: 0; }
+
+/* Hotfix History table — Basis column styling. */
+.hb-basis-cell {
+  font-size: 12px;
+  color: #5f6368;
+  white-space: nowrap;
+}
+.hb-basis-baseline { color: #80868b; font-style: italic; }
+.hb-basis-dash { color: #dadce0; }
+
 .hb-booking-meta {
   display: flex;
   gap: 16px;
@@ -3240,6 +3498,25 @@ body {
   padding: 20px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
+
+.hb-matrix-disclaimer {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: #fef7e0;
+  border: 1px solid #fde69e;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  color: #b06000;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.hb-matrix-disclaimer .material-icons { font-size: 20px; flex-shrink: 0; }
+.hb-matrix-disclaimer p { margin: 0; }
+.hb-matrix-disclaimer p + p { margin-top: 4px; }
+.hb-matrix-disclaimer a { color: #b06000; text-decoration: underline; }
+.hb-matrix-disclaimer a:hover { color: #7d4400; }
 
 .hb-matrix-controls {
   display: flex;
@@ -3295,11 +3572,15 @@ body {
   padding: 12px 16px;
   text-align: left;
   color: #5f6368;
-  border-bottom: 1px solid #e8eaed;
+  border-bottom: 1px solid #dadce0;
+  border-right: 1px solid #e8eaed;
   white-space: nowrap;
   position: sticky;
   top: 0;
   z-index: 2;
+}
+.hb-matrix-table th:last-child {
+  border-right: none;
 }
 
 .hb-matrix-table th:first-child {
@@ -3307,13 +3588,23 @@ body {
   left: 0;
   z-index: 3;
   background: #f8f9fa;
-  border-right: 1px solid #e8eaed;
+  border-right: 1px solid #dadce0;
 }
 
 .hb-matrix-table td {
   padding: 10px 16px;
-  border-bottom: 1px solid #f1f3f4;
+  border-bottom: 1px solid #e8eaed;
+  border-right: 1px solid #e8eaed;
   background: white;
+}
+.hb-matrix-table td:last-child {
+  border-right: none;
+}
+.hb-matrix-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.hb-matrix-table tbody tr:hover td {
+  background: #fafbfc;
 }
 
 .hb-matrix-table td:first-child {
@@ -3321,7 +3612,10 @@ body {
   left: 0;
   z-index: 1;
   background: white;
-  border-right: 1px solid #e8eaed;
+  border-right: 1px solid #dadce0;
+}
+.hb-matrix-table tbody tr:hover td:first-child {
+  background: #fafbfc;
 }
 
 .hb-client-col {
@@ -3355,6 +3649,98 @@ body {
 
 .hb-empty-cell {
   color: #dadce0;
+}
+
+/* -----------------------------------------------------------------------
+   In-flight CMs inside each matrix cell.
+
+   The Version Matrix intentionally shows only work in progress (deployed
+   CMs are excluded). Each cell renders zero or more in-flight items
+   stacked vertically as compact cards: version on top, status + CM link
+   below. A small colored dot on the status categorises workflow state
+   at a glance (blue = active, green = ready, amber = blocked, gray =
+   open/backlog).
+   ----------------------------------------------------------------------- */
+.hb-inflight-cell {
+  padding: 4px;
+  vertical-align: top;
+  min-width: 140px;
+}
+
+.hb-matrix-inflight-item {
+  display: block;
+  padding: 5px 8px;
+  background: #f8f9fa;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  text-align: left;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.hb-matrix-inflight-item + .hb-matrix-inflight-item {
+  margin-top: 4px;
+}
+.hb-matrix-inflight-item:hover {
+  background: #f1f3f4;
+  border-color: #dadce0;
+}
+
+.hb-matrix-inflight-version {
+  font-family: 'Google Sans', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  color: #202124;
+  line-height: 1.2;
+  letter-spacing: 0.1px;
+}
+
+.hb-matrix-inflight-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.hb-matrix-inflight-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #5f6368;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hb-matrix-inflight-status::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+/* Status color categories — see statusCategory() in hotfix-booking.js.
+   Colour the whole status label (text + dot) via currentColor. */
+.hb-status-progress .hb-matrix-inflight-status { color: #1a73e8; }
+.hb-status-ready    .hb-matrix-inflight-status { color: #1e8e3e; }
+.hb-status-blocked  .hb-matrix-inflight-status { color: #e37400; }
+.hb-status-open     .hb-matrix-inflight-status { color: #80868b; }
+.hb-status-default  .hb-matrix-inflight-status { color: #5f6368; }
+
+.hb-matrix-inflight-key {
+  color: #5f6368;
+  text-decoration: none;
+  font-family: 'Roboto Mono', 'Menlo', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2px;
+  flex-shrink: 0;
+}
+.hb-matrix-inflight-key:hover {
+  text-decoration: underline;
+  color: #1a73e8;
 }
 
 .hb-no-data,
