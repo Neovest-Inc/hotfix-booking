@@ -119,11 +119,21 @@ async def callback(
     request: Request,
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    error_description: str | None = Query(default=None),
 ) -> RedirectResponse:
     settings = get_settings()
     # Pop both up-front so the state is consumed even on error paths — no replay.
     expected_state = request.session.pop("oauth_state", None)
     return_to = request.session.pop("oauth_return_to", "/") or "/"
+
+    # User rejected the Atlassian consent screen (or Atlassian returned an
+    # error). Redirect back to the login gate rather than raising a raw 400 —
+    # `showLoginGate()` on the front-end reads `?auth_error=...` and displays
+    # a friendly message.
+    if error:
+        log.info("Atlassian OAuth returned error=%s (%s)", error, error_description)
+        return RedirectResponse(url=f"/?auth_error={error}", status_code=302)
 
     if not code or not state or not expected_state or not secrets.compare_digest(
         state, expected_state

@@ -301,3 +301,74 @@ def test_logout_without_session_still_succeeds(anon_client: TestClient) -> None:
     """Idempotent — logging out when not logged in is a no-op, not an error."""
     r = anon_client.post("/api/hotfix-booking/auth/logout")
     assert r.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/callback — Atlassian returned an error (e.g. user declined consent)
+# ---------------------------------------------------------------------------
+def test_callback_with_atlassian_error_redirects_to_login_gate(
+    anon_client: TestClient,
+) -> None:
+    """Atlassian sends `?error=access_denied&state=...` when the user clicks
+    Cancel on the consent screen. We must not surface a raw 400 — instead
+    redirect to `/?auth_error=access_denied` so the login gate can show a
+    friendly message."""
+    r = anon_client.get(
+        "/api/hotfix-booking/auth/callback?error=access_denied&state=whatever",
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert r.headers["location"] == "/?auth_error=access_denied"
+
+
+def test_callback_with_atlassian_error_still_consumes_state(
+    anon_client: TestClient,
+) -> None:
+    """Even on the error path, any stored `oauth_state` must be cleared so a
+    later replay of a stale code can't hijack the session."""
+    # Prime the session with a state.
+    _kickoff_login(anon_client)
+    assert "hb_session" in anon_client.cookies
+    # Atlassian error path — should still clear the state.
+    r = anon_client.get(
+        "/api/hotfix-booking/auth/callback?error=access_denied&state=whatever",
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    # A subsequent legitimate callback attempt with the original state must
+    # now fail (state was consumed on the error redirect).
+    r2 = anon_client.get(
+        "/api/hotfix-booking/auth/callback?code=x&state=whatever",
+        follow_redirects=False,
+    )
+    assert r2.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Session cookie signed with the wrong secret must be rejected.
+# Regression guard for SESSION_SECRET_KEY rotation.
+# ---------------------------------------------------------------------------
+def test_session_signed_with_wrong_secret_returns_401(
+    anon_client: TestClient,
+) -> None:
+    """A cookie signed by a stranger's key (or an old rotated key) must not
+    grant access — the app's SessionMiddleware should refuse to unsign it
+    and treat the request as anonymous."""
+    import itsdangerous
+    from base64 import b64encode
+    import json as _json
+
+    forged_signer = itsdangerous.TimestampSigner("not-the-real-secret" + "x" * 40)
+    data = b64encode(_json.dumps({
+        "user": {
+            "email": "attacker@example.com",
+            "displayName": "Attacker",
+            "accountId": "acc-attacker",
+        }
+    }).encode("utf-8"))
+    forged = forged_signer.sign(data).decode("utf-8")
+    anon_client.cookies.set("hb_session", forged)
+
+    # Any protected endpoint — pick /auth/me since it needs zero setup.
+    r = anon_client.get("/api/hotfix-booking/auth/me")
+    assert r.status_code == 401

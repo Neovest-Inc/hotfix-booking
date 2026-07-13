@@ -112,6 +112,12 @@
     }
     userEmail = me.email || '';
     userName = me.displayName || me.email || '';
+    // Auth OK — reveal the app UI (was hidden via `hidden` attribute in the
+    // HTML to prevent a flash of authenticated content on cold load).
+    const header = document.querySelector('.app-header');
+    const main = document.querySelector('.main-content');
+    if (header) header.hidden = false;
+    if (main) main.hidden = false;
     init();
     onTabShow();
   }
@@ -119,12 +125,28 @@
   function showLoginGate() {
     const gate = document.getElementById('hbLoginGate');
     if (gate) gate.style.display = 'flex';
-    // Hide the header (with sign-out button) and the main content — nothing
-    // to do until the user has a session.
-    const header = document.querySelector('.app-header');
-    const main = document.querySelector('.main-content');
-    if (header) header.style.display = 'none';
-    if (main) main.style.display = 'none';
+    // Header + main-content are already hidden via the `hidden` attribute in
+    // the HTML (FOUC prevention). We only need to reveal them when auth
+    // succeeds; on the login path we leave them alone.
+
+    // If Atlassian redirected back with ?auth_error=... (e.g. the user
+    // declined consent), surface it inline so they know what happened.
+    const params = new URLSearchParams(window.location.search);
+    const err = params.get('auth_error');
+    if (err) {
+      const errorEl = document.getElementById('hbLoginError');
+      if (errorEl) {
+        const msg = err === 'access_denied'
+          ? 'Sign-in was cancelled. Click below to try again.'
+          : `Sign-in failed (${err}). Click below to try again.`;
+        errorEl.textContent = msg;
+        errorEl.style.display = 'block';
+      }
+      // Clean the query string so a refresh doesn't re-show the message.
+      try {
+        window.history.replaceState({}, '', window.location.pathname);
+      } catch (_) { /* older browsers — ignore */ }
+    }
   }
 
   /**
@@ -338,6 +360,19 @@
       // Even if the network call fails, reloading will re-check auth.
     }
     window.location.reload();
+  }
+
+  /**
+   * Handle a 401 from any API call. Session likely expired (server-side
+   * secret rotation, cookie max-age, or admin logout). Toast + reload so
+   * `boot()` re-runs and shows the login gate. Returns true if a 401 was
+   * handled (caller should abort), false otherwise.
+   */
+  function handleAuthFailure(response) {
+    if (response.status !== 401) return false;
+    Utils.showToast('Your session has expired — reloading…', 'warning');
+    setTimeout(() => window.location.reload(), 1500);
+    return true;
   }
 
   function updateBookButtonState() {
@@ -1325,11 +1360,6 @@
       return;
     }
 
-    if (!userEmail || !userName) {
-      Utils.showToast('Enter your Neovest email at the top of the page first.', 'warning');
-      return;
-    }
-
     // If this booking would inherit parents (i.e. it overlaps with existing
     // non-cancelled bookings on the same release line), make the user confirm.
     // The whole point of parents is that the booker is aware they need to
@@ -1357,6 +1387,8 @@
           clientEnvironments: selectedClients
         })
       });
+
+      if (handleAuthFailure(response)) return;
 
       const data = await response.json();
 
@@ -1801,10 +1833,6 @@
    */
   function startCancelFlow(bookingId, version) {
     if (!bookingId) return;
-    if (!userEmail) {
-      Utils.showToast('Set your email at the top of the page first.', 'warning');
-      return;
-    }
     const affected = previewAffected(bookingId);
     openCancelConfirm({ bookingId, version, affected });
   }
@@ -1878,6 +1906,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bookingId })
       });
+      if (handleAuthFailure(resp)) return;
       const data = await resp.json();
       if (!resp.ok) {
         Utils.showToast(data.error || 'Failed to cancel booking', 'error');
