@@ -23,6 +23,10 @@ class Settings:
     teams_webhook_url: str = ""
     app_base_url: str = ""
     teams_target: str = ""
+    atlassian_client_id: str = ""
+    atlassian_client_secret: str = ""
+    session_secret_key: str = ""
+    session_max_age_days: int = 365
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -54,6 +58,10 @@ class Settings:
             teams_webhook_url=teams_webhook_url,
             app_base_url=os.getenv("APP_BASE_URL", "").strip().rstrip("/"),
             teams_target=teams_target,
+            atlassian_client_id=os.getenv("ATLASSIAN_CLIENT_ID", "").strip(),
+            atlassian_client_secret=os.getenv("ATLASSIAN_CLIENT_SECRET", "").strip(),
+            session_secret_key=os.getenv("SESSION_SECRET_KEY", "").strip(),
+            session_max_age_days=int(os.getenv("SESSION_MAX_AGE_DAYS", "365")),
         )
 
 

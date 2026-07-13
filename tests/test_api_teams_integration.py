@@ -13,7 +13,7 @@ import respx
 from fastapi.testclient import TestClient
 
 from hotfix_booking.config import Settings, reset_settings_for_tests
-from tests.conftest import load_fixture, write_bookings
+from tests.conftest import load_fixture, login_as, write_bookings
 
 TEAMS_URL = "https://webhook.test/hotfix"
 
@@ -176,9 +176,10 @@ class TestCancelNotification:
         teams_route = mock_jira.post(TEAMS_URL).mock(
             return_value=httpx.Response(200)
         )
+        login_as(client, ALICE_EMAIL, "Alice")
         r = client.post(
             "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
+            json={"bookingId": "HB-A"},
         )
         assert r.status_code == 200, r.text
         assert teams_route.called
@@ -198,9 +199,10 @@ class TestCancelNotification:
         _enable_teams(settings)
         write_bookings(bookings_file, [_mk_booking(id="HB-A", version="9.97.1")])
         mock_jira.post(TEAMS_URL).mock(return_value=httpx.Response(500))
+        login_as(client, ALICE_EMAIL, "Alice")
         r = client.post(
             "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
+            json={"bookingId": "HB-A"},
         )
         assert r.status_code == 200, r.text
         assert r.json()["cancelled"]["status"] == "cancelled"
@@ -214,9 +216,10 @@ class TestCancelNotification:
     ) -> None:
         write_bookings(bookings_file, [_mk_booking(id="HB-A", version="9.97.1")])
         # No _enable_teams; if the notifier tried to POST, respx would raise.
+        login_as(client, ALICE_EMAIL, "Alice")
         r = client.post(
             "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
+            json={"bookingId": "HB-A"},
         )
         assert r.status_code == 200, r.text
 
@@ -236,14 +239,11 @@ class TestCancelNotification:
         teams_route = mock_jira.post(TEAMS_URL).mock(
             return_value=httpx.Response(200)
         )
-        # Empty user list → no active user resolved → 400 (before the auth path)
-        # Use a known user but different email to trigger 403:
-        # Register Alice but pretend Bob is calling. Bob resolves to nothing → 400.
-        # Simpler: just pass a completely unknown email and expect 400. Either
-        # way, no Teams call should happen.
+        # Log in as a stranger — not the owner, not an admin, not a CM reporter → 403.
+        login_as(client, "stranger@example.com", "Stranger")
         r = client.post(
             "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": "stranger@example.com"},
+            json={"bookingId": "HB-A"},
         )
-        assert r.status_code in (400, 403)
+        assert r.status_code == 403
         assert not teams_route.called

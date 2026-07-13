@@ -16,7 +16,7 @@ import respx
 from fastapi.testclient import TestClient
 
 from hotfix_booking.config import Settings, reset_settings_for_tests
-from tests.conftest import read_bookings, write_bookings
+from tests.conftest import login_as, read_bookings, write_bookings
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +26,34 @@ ALICE_EMAIL = "alice@neovest.com"
 BOB_EMAIL = "bob@neovest.com"
 CAROL_EMAIL = "carol@neovest.com"
 ADMIN_EMAIL = "admin@neovest.com"
+
+_NAME_BY_EMAIL = {
+    ALICE_EMAIL: "Alice",
+    BOB_EMAIL: "Bob",
+    CAROL_EMAIL: "Carol",
+    ADMIN_EMAIL: "Admin User",
+}
+
+
+def _display_name(email: str) -> str:
+    """Fall back to the local-part if we don't have a canonical name."""
+    return _NAME_BY_EMAIL.get(email, email.split("@")[0])
+
+
+def _cancel_as(
+    client: TestClient, booking_id: str, email: str, **extra_payload
+) -> httpx.Response:
+    """Log in as `email` (name auto-derived) and POST /cancel with `booking_id`.
+
+    Caller identity now comes from the session cookie — the old
+    `cancelledByEmail` payload field is gone. `extra_payload` merges extra
+    keys into the body (used by a few tests that pass stray fields).
+    """
+    login_as(client, email, _display_name(email))
+    return client.post(
+        "/api/hotfix-booking/cancel",
+        json={"bookingId": booking_id, **extra_payload},
+    )
 
 
 def _user(name: str, email: str) -> dict:
@@ -108,10 +136,7 @@ class TestCancelBasic:
             _mk_booking(id="HB-A", version="9.97.1",
                         components=["REST"], clients=["C1"]),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["affected"] == []
@@ -144,10 +169,7 @@ class TestCancelWithChild:
                         parents=["HB-A"], original_parents=["HB-A"],
                         booker="Bob", booker_email=BOB_EMAIL),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200, r.text
         body = r.json()
         affected = body["affected"]
@@ -203,10 +225,7 @@ class TestCancelChain:
         write_bookings(bookings_file, self._chain())
         # Cancel HB-B (owned by Bob). HB-C (currently based on HB-B) should
         # rebase to HB-A.
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-B", "cancelledByEmail": BOB_EMAIL},
-        )
+        r = _cancel_as(client, "HB-B", BOB_EMAIL)
         assert r.status_code == 200, r.text
         body = r.json()
         assert [a["id"] for a in body["affected"]] == ["HB-C"]
@@ -221,10 +240,7 @@ class TestCancelChain:
         self, client: TestClient, bookings_file: Path, stub_jira_default
     ) -> None:
         write_bookings(bookings_file, self._chain())
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200, r.text
         # Only HB-B is a DIRECT child (HB-C's current parent is HB-B, not HB-A).
         assert [a["id"] for a in r.json()["affected"]] == ["HB-B"]
@@ -240,15 +256,9 @@ class TestCancelChain:
     ) -> None:
         # Step 1: cancel HB-B. HB-C rebases to HB-A. HB-C.rebaseHistory has 1 entry.
         write_bookings(bookings_file, self._chain())
-        client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-B", "cancelledByEmail": BOB_EMAIL},
-        )
+        _cancel_as(client, "HB-B", BOB_EMAIL)
         # Step 2: now cancel HB-A. HB-C (currently based on HB-A) rebases to baseline.
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200, r.text
         assert [a["id"] for a in r.json()["affected"]] == ["HB-C"]
         stored = {b["id"]: b for b in read_bookings(bookings_file)}
@@ -287,10 +297,7 @@ class TestCancelFanOut:
                         parents=["HB-A"], original_parents=["HB-A"],
                         booker="Carol", booker_email=CAROL_EMAIL),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200
         affected_ids = {a["id"] for a in r.json()["affected"]}
         assert affected_ids == {"HB-B", "HB-C"}
@@ -327,19 +334,13 @@ class TestCancelMultiParent:
                         booker="Carol", booker_email=CAROL_EMAIL),
         ])
         # Cancel HB-A: HB-C loses HB-A as parent, keeps HB-B.
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200
         assert [a["id"] for a in r.json()["affected"]] == ["HB-C"]
         stored = {b["id"]: b for b in read_bookings(bookings_file)}
         assert stored["HB-C"]["parents"] == ["HB-B"]
         # Now cancel HB-B: HB-C rebases to baseline.
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-B", "cancelledByEmail": BOB_EMAIL},
-        )
+        r = _cancel_as(client, "HB-B", BOB_EMAIL)
         assert r.status_code == 200
         stored = {b["id"]: b for b in read_bookings(bookings_file)}
         assert stored["HB-C"]["parents"] == []
@@ -365,10 +366,7 @@ class TestCancelUnrelatedUntouched:
                         at="2026-07-02T10:00:00+00:00",
                         booker="Bob", booker_email=BOB_EMAIL),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200
         assert r.json()["affected"] == []
         stored = {b["id"]: b for b in read_bookings(bookings_file)}
@@ -398,10 +396,7 @@ class TestCrossReleaseLineIsolation:
                         parents=["HB-98a"], original_parents=["HB-98a"],
                         booker="Carol", booker_email=CAROL_EMAIL),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-97a", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-97a", ALICE_EMAIL)
         assert r.status_code == 200
         assert r.json()["affected"] == []
         stored = {b["id"]: b for b in read_bookings(bookings_file)}
@@ -431,10 +426,7 @@ class TestBurnedVersion:
         mock_jira.post("/rest/api/3/search/jql").mock(
             return_value=httpx.Response(200, json=load_fixture("search_deployed.json"))
         )
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200
         # Now /next-version should return 9.94.24, NOT 9.94.23.
         r = client.get("/api/hotfix-booking/next-version")
@@ -454,10 +446,7 @@ class TestAuthorization:
                         components=["REST"], clients=["C1"],
                         booker="Alice", booker_email=ALICE_EMAIL),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": BOB_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", BOB_EMAIL)
         assert r.status_code == 403
         assert "only the booker" in r.json()["error"].lower()
         # Not cancelled
@@ -467,35 +456,28 @@ class TestAuthorization:
     def test_C9_owner_email_case_insensitive(
         self, client: TestClient, bookings_file: Path, stub_jira_default
     ) -> None:
+        """Booker's stored email may have different casing than the caller's
+        session email — the ownership check must still match."""
         write_bookings(bookings_file, [
             _mk_booking(id="HB-A", version="9.97.1",
                         components=["REST"], clients=["C1"],
-                        booker="Alice", booker_email=ALICE_EMAIL),
+                        booker="Alice", booker_email="ALICE@neovest.com"),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": "ALICE@neovest.com"},
-        )
-        # The Jira user-search mock only knows the lowercase key — but auth
-        # matches against booker's stored email case-insensitively BEFORE the
-        # rebase runs. `_users_by_email` returns [] for the upper case, so
-        # the endpoint returns 400 (no active Jira user).
-        # This test documents both behaviors: case-insensitive match works
-        # once Jira resolves the user; we assert the auth path allows
-        # matching upper-case owner email to the stored lowercase one.
-        # Since the mock uses exact-key lookup, adjust it to be lax:
-        assert r.status_code in (200, 400)
+        # Session carries the lowercase form (as Atlassian would return);
+        # ownership match must be case-insensitive.
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
+        assert r.status_code == 200, r.text
 
     def test_C9_admin_can_cancel_other_users_booking(
-        self, client: TestClient, bookings_file: Path, mock_jira: respx.MockRouter
+        self, client: TestClient, bookings_file: Path, settings: Settings,
+        mock_jira: respx.MockRouter,
     ) -> None:
-        # Reset settings with an ADMIN allow-list.
-        s = Settings(
-            jira_base_url="https://jira.test", jira_email="t@t", jira_api_token="s",
-            bookings_file=bookings_file, client_context_id=1, port=1,
-            booking_retention_days=180, admin_emails=frozenset({ADMIN_EMAIL}),
-        )
-        reset_settings_for_tests(s)
+        # Add ADMIN_EMAIL to the admin allow-list; keep every other field
+        # (including session_secret_key so login_as still works).
+        import dataclasses
+        reset_settings_for_tests(dataclasses.replace(
+            settings, admin_emails=frozenset({ADMIN_EMAIL}),
+        ))
         write_bookings(bookings_file, [
             _mk_booking(id="HB-A", version="9.97.1",
                         components=["REST"], clients=["C1"],
@@ -511,10 +493,7 @@ class TestAuthorization:
         mock_jira.post("/rest/api/3/search/jql").mock(
             return_value=httpx.Response(200, json={"issues": []})
         )
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ADMIN_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ADMIN_EMAIL)
         assert r.status_code == 200, r.text
         assert read_bookings(bookings_file)[0]["status"] == "cancelled"
 
@@ -557,10 +536,7 @@ class TestAuthorization:
         ])
         self._wire_user_search(mock_jira)
         self._wire_cm(mock_jira, reporter="Bob")  # matches Bob's displayName
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": BOB_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", BOB_EMAIL)
         assert r.status_code == 200, r.text
         stored = read_bookings(bookings_file)
         assert stored[0]["status"] == "cancelled"
@@ -579,10 +555,7 @@ class TestAuthorization:
         ])
         self._wire_user_search(mock_jira)
         self._wire_cm(mock_jira, reporter="  BOB  ")  # whitespace + case differ
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": BOB_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", BOB_EMAIL)
         assert r.status_code == 200, r.text
 
     def test_C9_non_reporter_non_owner_non_admin_still_forbidden(
@@ -596,10 +569,7 @@ class TestAuthorization:
         self._wire_user_search(mock_jira)
         # CM exists but the reporter is somebody else entirely.
         self._wire_cm(mock_jira, reporter="Somebody Else")
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": BOB_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", BOB_EMAIL)
         assert r.status_code == 403
         assert "reporter" in r.json()["error"].lower()
 
@@ -617,10 +587,7 @@ class TestAuthorization:
         mock_jira.post("/rest/api/3/search/jql").mock(
             return_value=httpx.Response(200, json={"issues": []})
         )
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": BOB_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", BOB_EMAIL)
         assert r.status_code == 403
 
 
@@ -635,15 +602,9 @@ class TestAlreadyCancelled:
             _mk_booking(id="HB-A", version="9.97.1",
                         components=["REST"], clients=["C1"]),
         ])
-        r1 = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r1 = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r1.status_code == 200
-        r2 = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r2 = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r2.status_code == 409
         assert "already cancelled" in r2.json()["error"].lower()
 
@@ -709,10 +670,7 @@ class TestActiveCmWarning:
     ) -> None:
         self._write_alice(bookings_file)
         self._wire_jira(mock_jira, cm_status=in_flight_status)
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200, r.text
         warning = r.json()["activeCmWarning"]
         assert warning == {"cmKey": "CM-9999", "status": in_flight_status}
@@ -734,10 +692,7 @@ class TestActiveCmWarning:
     ) -> None:
         self._write_alice(bookings_file)
         self._wire_jira(mock_jira, cm_status=terminal_status)
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200, r.text
         assert r.json()["activeCmWarning"] is None
 
@@ -746,10 +701,7 @@ class TestActiveCmWarning:
     ) -> None:
         self._write_alice(bookings_file)
         self._wire_jira(mock_jira, cm_status=None)
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200
         assert r.json()["activeCmWarning"] is None
 
@@ -882,14 +834,8 @@ class TestRaceSmoke:
                         parents=["HB-A"], original_parents=["HB-A"],
                         booker="Bob", booker_email=BOB_EMAIL),
         ])
-        r1 = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
-        r2 = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-B", "cancelledByEmail": BOB_EMAIL},
-        )
+        r1 = _cancel_as(client, "HB-A", ALICE_EMAIL)
+        r2 = _cancel_as(client, "HB-B", BOB_EMAIL)
         assert r1.status_code == 200 and r2.status_code == 200
         stored = {b["id"]: b for b in read_bookings(bookings_file)}
         assert stored["HB-A"]["status"] == "cancelled"
@@ -919,10 +865,7 @@ class TestBackfillThenCancel:
                                  encoding="utf-8")
         # Cancel HB-A. HB-B should get rebased to baseline (backfill established
         # HB-B.parents = ["HB-A"] first).
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200, r.text
         assert [a["id"] for a in r.json()["affected"]] == ["HB-B"]
         stored = {b["id"]: b for b in read_bookings(bookings_file)}
@@ -955,10 +898,8 @@ class TestOriginalParentsImmutable:
                         booker="Carol", booker_email=CAROL_EMAIL),
         ])
         # Cancel A then B
-        client.post("/api/hotfix-booking/cancel",
-                     json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL})
-        client.post("/api/hotfix-booking/cancel",
-                     json={"bookingId": "HB-B", "cancelledByEmail": BOB_EMAIL})
+        _cancel_as(client, "HB-A", ALICE_EMAIL)
+        _cancel_as(client, "HB-B", BOB_EMAIL)
         stored = {b["id"]: b for b in read_bookings(bookings_file)}
         assert stored["HB-C"]["parents"] == []
         assert stored["HB-C"]["originalParents"] == ["HB-B", "HB-A"]
@@ -976,21 +917,17 @@ class TestMissingBookedByEmail:
                         components=["REST"], clients=["C1"],
                         booker="Legacy Person", booker_email=""),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 403
 
     def test_C22_no_email_admin_can_cancel(
-        self, client: TestClient, bookings_file: Path, mock_jira: respx.MockRouter
+        self, client: TestClient, bookings_file: Path, settings: Settings,
+        mock_jira: respx.MockRouter,
     ) -> None:
-        s = Settings(
-            jira_base_url="https://jira.test", jira_email="t@t", jira_api_token="s",
-            bookings_file=bookings_file, client_context_id=1, port=1,
-            booking_retention_days=180, admin_emails=frozenset({ADMIN_EMAIL}),
-        )
-        reset_settings_for_tests(s)
+        import dataclasses
+        reset_settings_for_tests(dataclasses.replace(
+            settings, admin_emails=frozenset({ADMIN_EMAIL}),
+        ))
         write_bookings(bookings_file, [
             _mk_booking(id="HB-A", version="9.97.1",
                         components=["REST"], clients=["C1"],
@@ -1005,10 +942,7 @@ class TestMissingBookedByEmail:
         mock_jira.post("/rest/api/3/search/jql").mock(
             return_value=httpx.Response(200, json={"issues": []})
         )
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ADMIN_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ADMIN_EMAIL)
         assert r.status_code == 200, r.text
 
 
@@ -1017,50 +951,32 @@ class TestMissingBookedByEmail:
 # ---------------------------------------------------------------------------
 class TestBodyValidation:
     def test_C23_missing_bookingId(self, client: TestClient, stub_jira_default) -> None:
+        login_as(client, ALICE_EMAIL, "Alice")
         r = client.post(
             "/api/hotfix-booking/cancel",
-            json={"cancelledByEmail": ALICE_EMAIL},
+            json={},
         )
         assert r.status_code == 400
         assert "bookingId" in r.json()["error"]
 
-    def test_C23_missing_cancelledByEmail(
-        self, client: TestClient, stub_jira_default
+    def test_C23_missing_session_returns_401(
+        self, anon_client: TestClient
     ) -> None:
-        r = client.post(
+        """Under OAuth, caller identity must come from the session cookie.
+        No session → 401 (not 400)."""
+        r = anon_client.post(
             "/api/hotfix-booking/cancel",
             json={"bookingId": "HB-x"},
         )
-        assert r.status_code == 400
-        assert "cancelledByEmail" in r.json()["error"]
+        assert r.status_code == 401
 
     def test_C23_unknown_booking_id(
         self, client: TestClient, bookings_file: Path, stub_jira_default
     ) -> None:
         write_bookings(bookings_file, [])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-nope", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-nope", ALICE_EMAIL)
         assert r.status_code == 404
         assert "not found" in r.json()["error"].lower()
-
-    def test_C23_unresolvable_email_returns_400(
-        self, client: TestClient, bookings_file: Path, mock_jira: respx.MockRouter
-    ) -> None:
-        write_bookings(bookings_file, [
-            _mk_booking(id="HB-A", version="9.97.1",
-                        components=["REST"], clients=["C1"]),
-        ])
-        mock_jira.get("/rest/api/3/user/search").mock(
-            return_value=httpx.Response(200, json=[])
-        )
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": "ghost@neovest.com"},
-        )
-        assert r.status_code == 400
-        assert "ghost@neovest.com" in r.json()["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -1073,9 +989,10 @@ class TestCancelDoesNotAcceptCmKey:
     def test_cm_key_alone_is_rejected_as_missing_bookingId(
         self, client: TestClient, bookings_file: Path, stub_jira_default
     ) -> None:
+        login_as(client, ALICE_EMAIL, "Alice")
         r = client.post(
             "/api/hotfix-booking/cancel",
-            json={"cmKey": "CM-42", "cancelledByEmail": ALICE_EMAIL},
+            json={"cmKey": "CM-42"},
         )
         assert r.status_code == 400
         # Error should still name bookingId — the endpoint has one shape.
@@ -1090,14 +1007,9 @@ class TestCancelDoesNotAcceptCmKey:
             _mk_booking(id="HB-A", version="9.97.1",
                         components=["REST"], clients=["C1"]),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cmKey": "CM-999", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL, cmKey="CM-999")
         assert r.status_code == 200, r.text
         assert r.json()["cancelled"]["id"] == "HB-A"
-
-
 # ---------------------------------------------------------------------------
 # C25 — Response contract snapshot
 # ---------------------------------------------------------------------------
@@ -1113,10 +1025,7 @@ class TestResponseContract:
                         parents=["HB-A"], original_parents=["HB-A"],
                         booker="Bob", booker_email=BOB_EMAIL),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200
         body = r.json()
         # Top-level keys
@@ -1197,10 +1106,7 @@ class TestCancelRebasesOntoJiraCmPriors:
             self._cm_issue("CM-9812", "9.98.12",
                            components=["REST"], clients=["C1"]),
         ])
-        r = client.post(
-            "/api/hotfix-booking/cancel",
-            json={"bookingId": "HB-A", "cancelledByEmail": ALICE_EMAIL},
-        )
+        r = _cancel_as(client, "HB-A", ALICE_EMAIL)
         assert r.status_code == 200, r.text
         body = r.json()
         # HB-B affected; new parent must be the CM, not baseline.

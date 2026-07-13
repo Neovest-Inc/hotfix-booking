@@ -5,8 +5,11 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import Scope
 
+from .auth import router as auth_router
+from .config import get_settings
 from .routes import router
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
@@ -27,10 +30,31 @@ class NoCacheStaticFiles(StaticFiles):
 def create_app() -> FastAPI:
     app = FastAPI(title="HotFix Booking", version="0.1.0")
 
+    settings = get_settings()
+    if not settings.session_secret_key:
+        raise RuntimeError(
+            "SESSION_SECRET_KEY is not set. Generate one with "
+            '`python -c "import secrets; print(secrets.token_hex(32))"` '
+            "and add it to your .env."
+        )
+    # Session cookie signed with SESSION_SECRET_KEY. Rotating the secret
+    # invalidates every session (everyone re-logs in). `Secure` flag is only
+    # sent when APP_BASE_URL is HTTPS — dev over http://localhost:3001 needs
+    # https_only=False or the cookie won't be sent.
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_secret_key,
+        session_cookie="hb_session",
+        max_age=settings.session_max_age_days * 24 * 60 * 60,
+        same_site="lax",
+        https_only=settings.app_base_url.lower().startswith("https://"),
+    )
+
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok"}
 
+    app.include_router(auth_router)
     app.include_router(router)
 
     if _STATIC_DIR.is_dir():

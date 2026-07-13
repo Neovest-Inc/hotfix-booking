@@ -93,7 +93,6 @@ class TestPostBook:
         "version": "9.94.23",
         "components": ["Alerts"],
         "clientEnvironments": ["CL001 - Fortress"],
-        "bookedBy": "Alice",
     }
 
     @pytest.fixture(autouse=True)
@@ -115,20 +114,24 @@ class TestPostBook:
         assert booking["version"] == "9.94.23"
         assert booking["components"] == ["Alerts"]
         assert booking["clientEnvironments"] == ["CL001 - Fortress"]
-        assert booking["bookedBy"] == "Alice"
+        # Identity comes from the session cookie — see conftest.TEST_USER_NAME.
+        assert booking["bookedBy"] == "Test User"
+        assert booking["bookedByEmail"] == "test-user@example.com"
         assert booking["status"] == "booked"
         assert booking["id"].startswith("HB-")
         assert booking["bookedAt"]
         assert read_bookings(bookings_file) == [booking]
 
-    def test_booked_by_defaults_to_unknown(
-        self, client: TestClient, bookings_file: Path
+    def test_ignores_client_supplied_bookedBy(
+        self, client: TestClient
     ) -> None:
-        payload = {**self._valid}
-        payload.pop("bookedBy")
+        """Payload's bookedBy / bookedByEmail must be ignored — no spoofing."""
+        payload = {**self._valid, "bookedBy": "SPOOFED", "bookedByEmail": "x@x"}
         r = client.post("/api/hotfix-booking/book", json=payload)
         assert r.status_code == 200, r.text
-        assert r.json()["booking"]["bookedBy"] == "Unknown"
+        booking = r.json()["booking"]
+        assert booking["bookedBy"] == "Test User"
+        assert booking["bookedByEmail"] == "test-user@example.com"
 
     @pytest.mark.parametrize(
         "missing_key",

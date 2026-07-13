@@ -6,9 +6,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
+from .auth import UserContext, require_user
 from .config import get_settings
 from .dependencies import cm_to_pseudo_booking
 from .history import (
@@ -33,7 +34,6 @@ from .store import (
     save_bookings,
 )
 from .teams_notifier import notify_booking_cancelled, notify_booking_created
-from .users import resolve_jira_user
 from .versioning import is_semver, parse_version
 
 log = logging.getLogger(__name__)
@@ -61,7 +61,10 @@ def _malformed_response() -> JSONResponse:
 # GET /field-options
 # ---------------------------------------------------------------------------
 @router.get("/field-options")
-async def field_options(request: Request) -> Any:
+async def field_options(
+    request: Request,
+    _user: UserContext = Depends(require_user),
+) -> Any:
     try:
         async with _jira(request) as jira:
             components = await jira.fetch_components()
@@ -73,44 +76,13 @@ async def field_options(request: Request) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# GET /resolve-user?email=X
-# ---------------------------------------------------------------------------
-@router.get("/resolve-user")
-async def resolve_user(
-    request: Request, email: str = Query(default="")
-) -> Any:
-    """Look up a Jira user by email and return their canonical displayName.
-
-    Used by the front-end so `bookedBy` names always match how the person
-    appears on Jira CM tickets.
-    """
-    if not email or not email.strip():
-        return JSONResponse({"error": "email is required"}, status_code=400)
-    try:
-        async with _jira(request) as jira:
-            users = await jira.search_users_by_email(email)
-    except Exception as e:  # noqa: BLE001
-        log.error("Resolve user error: %s", e)
-        return JSONResponse({"error": "Failed to look up user in Jira"}, status_code=500)
-
-    match = resolve_jira_user(email, users)
-    if match is None:
-        return JSONResponse(
-            {"error": f"No active Jira user found for {email}", "email": email},
-            status_code=404,
-        )
-    return {
-        "email": email,
-        "displayName": match["displayName"],
-        "accountId": match["accountId"],
-    }
-
-
-# ---------------------------------------------------------------------------
 # GET /deployed-cms
 # ---------------------------------------------------------------------------
 @router.get("/deployed-cms")
-async def deployed_cms(request: Request) -> Any:
+async def deployed_cms(
+    request: Request,
+    _user: UserContext = Depends(require_user),
+) -> Any:
     try:
         async with _jira(request) as jira:
             cms = await jira.fetch_deployed_cms(deployed_only=False)
@@ -128,6 +100,7 @@ async def next_version(
     request: Request,
     minor: int | None = Query(default=None),
     major: int | None = Query(default=None),
+    _user: UserContext = Depends(require_user),
 ) -> Any:
     """Compute the next available hotfix version.
 
@@ -209,6 +182,7 @@ async def next_version(
 def bookings(
     minor: int | None = Query(default=None),
     major: int = Query(default=9),
+    _user: UserContext = Depends(require_user),
 ) -> Any:
     """Return pending bookings. With `?minor=X` filters to that release line."""
     settings = get_settings()
@@ -239,14 +213,17 @@ async def book(
     request: Request,
     background_tasks: BackgroundTasks,
     payload: dict = Body(default_factory=dict),
+    user: UserContext = Depends(require_user),
 ) -> Any:
     settings = get_settings()
 
     version = payload.get("version")
     components = payload.get("components")
     client_envs = payload.get("clientEnvironments")
-    booked_by = payload.get("bookedBy")
-    booked_by_email = payload.get("bookedByEmail")
+    # Identity always comes from the session — any `bookedBy` / `bookedByEmail`
+    # in the payload is ignored (was a spoofing vector under the old flow).
+    booked_by = user.displayName
+    booked_by_email = user.email
 
     if not version or components is None or client_envs is None:
         return JSONResponse(
@@ -266,26 +243,6 @@ async def book(
             {"error": f"Invalid version format: {version!r}. Expected x.y.z (e.g. 9.97.82)."},
             status_code=400,
         )
-
-    # If the client provided an email, resolve it via Jira before proceeding.
-    # This gives us the canonical Jira displayName (matches how the person
-    # appears on CM tickets) and prevents spoofing via a fake `bookedBy` string.
-    if booked_by_email:
-        try:
-            async with _jira(request) as jira:
-                users = await jira.search_users_by_email(booked_by_email)
-        except Exception as e:  # noqa: BLE001
-            log.error("Book (user lookup) error: %s", e)
-            return JSONResponse(
-                {"error": "Failed to verify user with Jira"}, status_code=500
-            )
-        match = resolve_jira_user(booked_by_email, users)
-        if match is None:
-            return JSONResponse(
-                {"error": f"No active Jira user found for {booked_by_email}"},
-                status_code=400,
-            )
-        booked_by = match["displayName"]
 
     # Fresh-next check: the submitted version tells us which minor line the
     # user is targeting (e.g. 9.95.7 → the 9.95.x release). Query Jira for the
@@ -380,7 +337,10 @@ async def book(
 # GET /client-versions
 # ---------------------------------------------------------------------------
 @router.get("/client-versions")
-async def client_versions(request: Request) -> Any:
+async def client_versions(
+    request: Request,
+    _user: UserContext = Depends(require_user),
+) -> Any:
     settings = get_settings()
     try:
         async with _jira(request) as jira:
@@ -413,6 +373,7 @@ async def history(
     request: Request,
     minor: int | None = Query(default=None),
     major: int | None = Query(default=None),
+    _user: UserContext = Depends(require_user),
 ) -> Any:
     settings = get_settings()
     filter_requested = major is not None and minor is not None
@@ -512,15 +473,19 @@ async def cancel(
     request: Request,
     background_tasks: BackgroundTasks,
     payload: dict = Body(default_factory=dict),
+    user: UserContext = Depends(require_user),
 ) -> Any:
     """Cancel a booking and rebase its direct downstream children.
 
+    Caller identity comes from the signed session cookie — any
+    `cancelledByEmail` in the payload is ignored (was a spoofing vector).
+
     Authorization — any ONE of the following grants permission:
-      - `cancelledByEmail` matches the booking's `bookedByEmail` (case-insensitive)
-      - `cancelledByEmail` is in `ADMIN_EMAILS`
-      - The Jira displayName resolved from `cancelledByEmail` matches the
-        `reporter` on a Jira CM for the booking's version (i.e. the person who
-        filed the CM in Jira can also close out the app-side booking)
+      - session email matches the booking's `bookedByEmail` (case-insensitive)
+      - session email is in `ADMIN_EMAILS`
+      - session displayName matches the `reporter` on a Jira CM for the
+        booking's version (i.e. the person who filed the CM in Jira can
+        also close out the app-side booking)
 
     Cancellation is a soft-delete — the version stays in the store (burned) so
     `next-version` keeps counting past it and the History view keeps an audit
@@ -535,33 +500,14 @@ async def cancel(
     settings = get_settings()
 
     booking_id = payload.get("bookingId")
-    cancelled_by_email = payload.get("cancelledByEmail")
     if not booking_id or not isinstance(booking_id, str):
         return JSONResponse(
             {"error": "Missing required field: bookingId"}, status_code=400
         )
-    if not cancelled_by_email or not isinstance(cancelled_by_email, str):
-        return JSONResponse(
-            {"error": "Missing required field: cancelledByEmail"}, status_code=400
-        )
 
+    cancelled_by_email = user.email
+    cancelled_by_name = user.displayName
     email_lc = cancelled_by_email.strip().lower()
-
-    try:
-        async with _jira(request) as jira:
-            users = await jira.search_users_by_email(cancelled_by_email)
-    except Exception as e:  # noqa: BLE001
-        log.error("Cancel (user lookup) error: %s", e)
-        return JSONResponse(
-            {"error": "Failed to verify user with Jira"}, status_code=500
-        )
-    match = resolve_jira_user(cancelled_by_email, users)
-    if match is None:
-        return JSONResponse(
-            {"error": f"No active Jira user found for {cancelled_by_email}"},
-            status_code=400,
-        )
-    cancelled_by_name = match["displayName"]
     is_admin = email_lc in {e.lower() for e in settings.admin_emails}
 
     # Preliminary read (no lock) to learn the target booking's version so we

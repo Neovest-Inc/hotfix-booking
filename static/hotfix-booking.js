@@ -22,11 +22,10 @@
   // the Cancel flow to preview affected downstream bookings client-side.
   let renderedHotfixes = [];
 
-  // The signed-in user (resolved via Jira email lookup, cached in localStorage).
+  // The signed-in user — populated by `boot()` from GET /api/hotfix-booking/auth/me
+  // after successful Atlassian OAuth login. Empty until then.
   let userEmail = '';
   let userName = '';
-  const USER_EMAIL_KEY = 'hotfixBooking.userEmail';
-  const USER_NAME_KEY = 'hotfixBooking.userName';
   // Which of the three pill views was last active. Restored on load so a full
   // page refresh keeps the user where they were (Book / Matrix / History).
   const ACTIVE_VIEW_KEY = 'hotfixBooking.activeView';
@@ -82,6 +81,51 @@
   // Cache for component-to-color mapping
   const componentColorCache = {};
   let colorIndex = 0;
+
+  /**
+   * Entry point — checks whether the user is logged in (via /auth/me), and
+   * either shows the login gate or initializes the app.
+   *
+   * Called from index.html on DOMContentLoaded. Replaces the old
+   * init() + onTabShow() bootstrap pair.
+   */
+  async function boot() {
+    let me;
+    try {
+      const r = await fetch('/api/hotfix-booking/auth/me');
+      if (r.status === 200) {
+        me = await r.json();
+      } else if (r.status === 401) {
+        showLoginGate();
+        return;
+      } else {
+        // Unexpected status — treat like unauthenticated so the user has a
+        // way forward (log in) rather than a broken silent state.
+        console.error('Unexpected /auth/me status:', r.status);
+        showLoginGate();
+        return;
+      }
+    } catch (e) {
+      console.error('Failed to reach /auth/me:', e);
+      showLoginGate();
+      return;
+    }
+    userEmail = me.email || '';
+    userName = me.displayName || me.email || '';
+    init();
+    onTabShow();
+  }
+
+  function showLoginGate() {
+    const gate = document.getElementById('hbLoginGate');
+    if (gate) gate.style.display = 'flex';
+    // Hide the header (with sign-out button) and the main content — nothing
+    // to do until the user has a session.
+    const header = document.querySelector('.app-header');
+    const main = document.querySelector('.main-content');
+    if (header) header.style.display = 'none';
+    if (main) main.style.display = 'none';
+  }
 
   /**
    * Initialize the module
@@ -219,13 +263,11 @@
       });
     }
 
-    // "Booking as:" user email + resolved-name display.
+    // "Signed in as:" widget + Sign Out button.
     initUserBox();
 
-    // Restore the last-active pill view from localStorage. Do this AFTER
-    // initUserBox so a first-visit modal (which needs the app initialized)
-    // still opens on top. Book is the default fallback — matches the HTML's
-    // `pill-btn active` marker on the Book button.
+    // Restore the last-active pill view from localStorage. Book is the default
+    // fallback — matches the HTML's `pill-btn active` marker on the Book button.
     const storedView = (() => {
       try { return localStorage.getItem(ACTIVE_VIEW_KEY); } catch (_) { return null; }
     })();
@@ -265,171 +307,46 @@
 
   /**
    * Wire up the header "Booking as:" area.
-   * - Restores previously-verified email + name from localStorage on load.
-   * - Resolves the email via Jira on blur / Enter and displays the real name.
-   * - Book Hotfix button is disabled until a name is resolved.
-   * - On a first visit with no stored user, pops a blocking modal so the app
-   *   can't be used anonymously.
+   * - Populates the header widget from the module-level userEmail/userName
+   *   (set by `boot()` after a successful /auth/me call).
+   * - Wires the Sign Out button to POST /auth/logout and reload.
+   *
+   * Identity itself is not managed here — it's owned by the server session
+   * cookie set during the Atlassian OAuth 2.0 (3LO) flow. `boot()` decides
+   * whether to show the login gate vs initialize the app; this function
+   * only paints the header for a logged-in user.
    */
   function initUserBox() {
-    const emailEl = document.getElementById('hbUserEmail');
-    const statusEl = document.getElementById('hbUserStatus');
-    const clearBtn = document.getElementById('hbUserClear');
-    if (!emailEl || !statusEl) return;
-
-    const storedEmail = localStorage.getItem(USER_EMAIL_KEY) || '';
-    const storedName = localStorage.getItem(USER_NAME_KEY) || '';
-    if (storedEmail && storedName) {
-      userEmail = storedEmail;
-      userName = storedName;
-      showResolvedUser(statusEl, emailEl, clearBtn);
-    } else {
-      updateBookButtonState();
-      openUserModal();
-    }
-
-    async function tryResolve() {
-      const email = emailEl.value.trim();
-      if (!email) return;
-      if (email === userEmail && userName) return;   // already resolved
-      statusEl.textContent = 'Looking up…';
-      statusEl.className = 'hb-user-hint';
-      const result = await resolveEmail(email);
-      if (result.ok) {
-        userEmail = result.email;
-        userName = result.displayName;
-        localStorage.setItem(USER_EMAIL_KEY, userEmail);
-        localStorage.setItem(USER_NAME_KEY, userName);
-        showResolvedUser(statusEl, emailEl, clearBtn);
-        // The header inline input is only reachable AFTER the first-visit
-        // modal has closed, so any success here is a mid-session identity
-        // swap — pull fresh data so the visible view reflects the new user
-        // (Cancel buttons re-evaluate against the new email).
-        reloadCurrentViewData();
-      } else {
-        statusEl.textContent = result.error || 'User not found in Jira';
-        statusEl.className = 'hb-user-error';
-        userEmail = '';
-        userName = '';
-        updateBookButtonState();
-      }
-    }
-
-    emailEl.addEventListener('blur', tryResolve);
-    emailEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        emailEl.blur();
-      }
-    });
-
-    if (clearBtn) {
-      clearBtn.addEventListener('click', () => {
-        userEmail = '';
-        userName = '';
-        localStorage.removeItem(USER_EMAIL_KEY);
-        localStorage.removeItem(USER_NAME_KEY);
-        emailEl.value = '';
-        emailEl.style.display = '';
-        emailEl.focus();
-        clearBtn.style.display = 'none';
-        statusEl.textContent = 'Booking as:';
-        statusEl.className = 'hb-user-hint';
-        updateBookButtonState();
-      });
+    const nameEl = document.getElementById('hbUserName');
+    const signOutBtn = document.getElementById('hbSignOutBtn');
+    if (nameEl) nameEl.textContent = userName || userEmail || '(unknown)';
+    if (nameEl && userEmail) nameEl.title = userEmail;
+    if (signOutBtn) {
+      signOutBtn.addEventListener('click', signOut);
     }
   }
 
   /**
-   * Shared email → { ok, email, displayName } | { ok:false, error } resolver.
+   * Sign out — clears the server-side session and reloads. The reload will
+   * trigger `boot()` again, which will now see 401 on /auth/me and show the
+   * login gate.
    */
-  async function resolveEmail(email) {
+  async function signOut() {
     try {
-      const r = await fetch(`/api/hotfix-booking/resolve-user?email=${encodeURIComponent(email)}`);
-      const data = await r.json();
-      if (r.status === 200 && data.displayName) {
-        return { ok: true, email: data.email, displayName: data.displayName };
-      }
-      return { ok: false, error: data.error || 'User not found in Jira' };
-    } catch (e) {
-      console.error('User resolve failed:', e);
-      return { ok: false, error: 'Failed to reach Jira' };
+      await fetch('/api/hotfix-booking/auth/logout', { method: 'POST' });
+    } catch (_) {
+      // Even if the network call fails, reloading will re-check auth.
     }
-  }
-
-  /**
-   * Blocking first-visit modal. Only way past is a successful email resolve.
-   */
-  function openUserModal() {
-    const overlay = document.getElementById('hbUserModal');
-    const emailEl = document.getElementById('hbModalEmail');
-    const submitBtn = document.getElementById('hbModalSubmit');
-    const errorEl = document.getElementById('hbModalError');
-    const headerEmailEl = document.getElementById('hbUserEmail');
-    const headerStatusEl = document.getElementById('hbUserStatus');
-    const headerClearBtn = document.getElementById('hbUserClear');
-    if (!overlay || !emailEl || !submitBtn) return;
-
-    overlay.style.display = 'flex';
-    setTimeout(() => emailEl.focus(), 0);
-    errorEl.textContent = '';
-
-    async function submit() {
-      const email = emailEl.value.trim();
-      if (!email) {
-        errorEl.textContent = 'Please enter your email.';
-        return;
-      }
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Looking up…';
-      errorEl.textContent = '';
-      const result = await resolveEmail(email);
-      if (result.ok) {
-        // Was this a mid-session swap (someone already loaded data as user A
-        // and just re-identified as user B)? If so, refresh; otherwise it's
-        // the first-visit resolve and `onTabShow` is already loading data.
-        const wasFirstVisit = !fieldOptionsLoaded;
-        userEmail = result.email;
-        userName = result.displayName;
-        localStorage.setItem(USER_EMAIL_KEY, userEmail);
-        localStorage.setItem(USER_NAME_KEY, userName);
-        overlay.style.display = 'none';
-        showResolvedUser(headerStatusEl, headerEmailEl, headerClearBtn);
-        if (!wasFirstVisit) reloadCurrentViewData();
-      } else {
-        errorEl.textContent = result.error;
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Continue';
-      }
-    }
-
-    submitBtn.onclick = submit;
-    emailEl.onkeydown = (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        submit();
-      }
-    };
-  }
-
-  function showResolvedUser(statusEl, emailEl, clearBtn) {
-    statusEl.innerHTML = `Booking as: <span class="hb-user-name">${Utils.escapeHtml(userName)}</span>`;
-    statusEl.className = 'hb-user-hint';
-    emailEl.value = userEmail;
-    emailEl.style.display = 'none';
-    if (clearBtn) clearBtn.style.display = '';
-    updateBookButtonState();
+    window.location.reload();
   }
 
   function updateBookButtonState() {
+    // Under OAuth, if the app is initialized the user is logged in — no
+    // per-click identity gate needed. Kept as a no-op so existing call sites
+    // (e.g. re-enable after a failed booking attempt) still work.
     if (!bookBtn) return;
-    if (!userName) {
-      bookBtn.disabled = true;
-      bookBtn.title = 'Enter your Neovest email above before booking';
-    } else {
-      bookBtn.disabled = false;
-      bookBtn.title = '';
-    }
+    bookBtn.disabled = false;
+    bookBtn.title = '';
   }
 
   /**
@@ -1437,8 +1354,7 @@
         body: JSON.stringify({
           version: nextVersion,
           components: selectedComponents,
-          clientEnvironments: selectedClients,
-          bookedByEmail: userEmail
+          clientEnvironments: selectedClients
         })
       });
 
@@ -1960,7 +1876,7 @@
       const resp = await fetch('/api/hotfix-booking/cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bookingId, cancelledByEmail: userEmail })
+        body: JSON.stringify({ bookingId })
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -2065,6 +1981,7 @@
 
   // Export module
   window.HotfixBookingModule = {
+    boot,
     init,
     onTabShow,
     refresh
