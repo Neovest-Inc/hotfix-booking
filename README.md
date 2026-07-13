@@ -2,11 +2,11 @@
 
 [![tests](https://github.com/Neovest-Inc/hotfix-booking/actions/workflows/test.yml/badge.svg)](https://github.com/Neovest-Inc/hotfix-booking/actions/workflows/test.yml)
 
-A small internal web app that helps the team coordinate hotfix releases across clients and components. It reads live data from Jira, shows it in three useful views, and lets you reserve the next available hotfix version number so two people don't accidentally pick the same one.
+An internal web app that helps the team coordinate hotfix releases across clients and components. It reads live data from Jira and lets you reserve the next available hotfix version number so two people don't accidentally pick the same one. It also shows dependencies between hotfixes.
 
 ## Signing in
 
-On your first visit you'll see a **Log in with Atlassian** button. One click, one Atlassian consent screen, and you're in — the app reads your name and email straight from your Atlassian (Jira) profile, so every booking is attributed to the same name you appear under on CM tickets.
+On your first visit you'll see a **Log in with Atlassian** button. The app reads your name and email straight from your Atlassian (Jira) profile, so every booking is attributed to the same name you appear under on CM tickets.
 
 - No separate password — your Atlassian login is your login.
 - Your session is kept in a **signed cookie in your browser** that lasts 365 days by default.
@@ -26,10 +26,10 @@ Open the app in a browser and you'll see three tabs:
 - **My Hotfixes** (below the form) shows your latest 8 hotfixes on the selected release — either ones you booked in this app or ones where you're the Jira reporter of the CM. Same expandable tag lists as before. Refreshes automatically every 30 seconds while the tab is visible. See the **Hotfix History** tab for the release-wide view.
 
 ### 2. Version Matrix
-A grid showing, for every **client** × every **component**, the highest version currently deployed. Handy for answering "what version of X is client Y running?" at a glance. Hover any cell to see the underlying Jira CM ticket and deployment date.
+A grid showing, for every **client** × every **component**, the Hotfixes/CMs currently in progress. Hover any cell to see the underlying Jira CM ticket and deployment date.
 
 ### 3. Hotfix History
-A filterable table of every hotfix for a given release (up to 8 recent release lines in the dropdown). Combines what's been **deployed** (from Jira) with what's been **booked** (from this app) into one chronological view. Every row with a CM ticket links straight back to it in Jira.
+A filterable table of every hotfix for a given release (up to 8 recent release lines in the dropdown). Combines what's been **created** (in Jira) with what's been **booked** (from this app) into one chronological view. Every row with a CM ticket links straight back to it in Jira.
 
 ## How does it work?
 
@@ -88,13 +88,6 @@ pytest
 
 Do this before any release, and any time something feels off. Once the app is deployed to a shared server, this should run nightly on that server.
 
-## Known limits
-
-- **Single-tenant OAuth app**: the Atlassian OAuth 2.0 app is private by default — only the person who registered it can log in. Enable **Sharing** in the Atlassian Developer Console for teammates to log in too (they'll see a "not reviewed by Atlassian" banner on first consent, which is normal for internal integrations).
-- **Session lifetime**: default 365 days. Rotating `SESSION_SECRET_KEY` in `.env` logs everyone out immediately — the recovery lever if a cookie ever leaks.
-- Runs as a single uvicorn worker by default. If you ever scale to multi-worker, the in-process file lock needs to be swapped for an OS-level file lock (see the note in `store.py`).
-
-If any of these become a real problem they can be addressed. Ask before changing user-visible behavior.
 
 ## Project layout
 
