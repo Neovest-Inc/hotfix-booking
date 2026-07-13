@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from hotfix_booking.app import create_app
 from hotfix_booking.config import Settings, reset_settings_for_tests
+from hotfix_booking.jira_client import clear_cache as _clear_jira_cache
 
 FIXTURES = Path(__file__).parent / "fixtures" / "jira"
 TEST_JIRA_BASE = "https://jira.test"
@@ -27,6 +28,17 @@ TEST_USER_ACCOUNT_ID = "test-account-id"
 
 def load_fixture(name: str) -> dict | list:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+@pytest.fixture(autouse=True)
+def _reset_jira_cache() -> None:
+    """Wipe the module-level Jira response cache between tests.
+
+    Without this, a mocked response from test A would satisfy the cache for
+    test B and hide real behavior. The cache is process-global so it MUST
+    be cleared explicitly per test.
+    """
+    _clear_jira_cache()
 
 
 @pytest.fixture

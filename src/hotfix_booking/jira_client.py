@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -25,6 +26,53 @@ log = logging.getLogger(__name__)
 # wrong. Bump if the CM volume genuinely grows past this.
 _MAX_PAGES = 15
 _PAGE_SIZE = 100
+
+# ---------------------------------------------------------------------------
+# In-memory response cache
+# ---------------------------------------------------------------------------
+# All four `fetch_*` methods below are wrapped in a tiny process-global TTL
+# cache. Rationale:
+#  - Every user page-load / auto-refresh cycle hits several endpoints, most
+#    of which independently call the same underlying Jira query (e.g.
+#    fetch_deployed_cms is invoked by /next-version, /client-versions, and
+#    /history). Without caching those are 3+ Jira round-trips (~200ms each)
+#    for what is semantically ONE fetch.
+#  - Jira data is only mutated externally (by the CM workflow), always with
+#    minutes of lag anyway, so a 30-second TTL is safe: the freshness window
+#    that matters for the user is "second-to-second consistency across the
+#    tabs I have open right now".
+#
+# Cached values are RETURNED BY REFERENCE. Callers must treat them as
+# read-only — mutating a cached list will leak to future readers. Every
+# caller in routes.py today reads only; keep it that way.
+#
+# Tests reset the cache between cases via the autouse `_reset_jira_cache`
+# fixture in tests/conftest.py — otherwise a mocked response from test A
+# would satisfy the cache for test B and hide real behavior.
+_CACHE_TTL_SECONDS = 30.0
+_cache: dict[tuple, tuple[float, Any]] = {}
+
+
+def _cache_get(key: tuple) -> Any | None:
+    entry = _cache.get(key)
+    if entry is None:
+        return None
+    stored_at, value = entry
+    if time.monotonic() - stored_at > _CACHE_TTL_SECONDS:
+        # Expired — drop and force a refetch.
+        _cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: tuple, value: Any) -> None:
+    _cache[key] = (time.monotonic(), value)
+
+
+def clear_cache() -> None:
+    """Empty the Jira response cache. Called from tests between cases; safe
+    to call at any time in production (next call refetches from Jira)."""
+    _cache.clear()
 
 _SEARCH_FIELDS = [
     "summary",
@@ -136,6 +184,10 @@ class JiraClient:
         return [_issue_to_cm(i) for i in all_issues]
 
     async def fetch_deployed_cms(self, deployed_only: bool = True) -> list[dict]:
+        cache_key = ("fetch_deployed_cms", deployed_only)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
         status_filter = (
             'AND status in ("Deployment Completed", "Done")' if deployed_only else ""
         )
@@ -143,19 +195,37 @@ class JiraClient:
         # on a 3-month release cadence, may be delayed). At ~200 CMs/month
         # that's ~800 CMs, comfortably within the pagination safety cap.
         jql = f"project = CM {status_filter} AND created >= -120d ORDER BY created DESC"
-        return await self._search_jql(jql)
+        result = await self._search_jql(jql)
+        _cache_set(cache_key, result)
+        return result
 
     async def fetch_cms_by_version(self, major: int, minor: int) -> list[dict]:
+        cache_key = ("fetch_cms_by_version", major, minor)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
         jql = f'project = CM AND fixVersion ~ "{major}.{minor}.*" ORDER BY created DESC'
-        return await self._search_jql(jql)
+        result = await self._search_jql(jql)
+        _cache_set(cache_key, result)
+        return result
 
     async def fetch_components(self) -> list[dict]:
+        cache_key = ("fetch_components",)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
         assert self._client is not None
         resp = await self._client.get("/rest/api/3/project/CM/components")
         resp.raise_for_status()
-        return [{"id": c.get("id"), "name": c.get("name")} for c in (resp.json() or [])]
+        result = [{"id": c.get("id"), "name": c.get("name")} for c in (resp.json() or [])]
+        _cache_set(cache_key, result)
+        return result
 
     async def fetch_client_options(self) -> list[dict]:
+        cache_key = ("fetch_client_options", self.settings.client_context_id)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
         assert self._client is not None
         url = (
             f"/rest/api/3/field/customfield_13235/context/"
@@ -164,4 +234,6 @@ class JiraClient:
         resp = await self._client.get(url)
         resp.raise_for_status()
         values = (resp.json() or {}).get("values", []) or []
-        return [{"id": v.get("id"), "value": v.get("value")} for v in values]
+        result = [{"id": v.get("id"), "value": v.get("value")} for v in values]
+        _cache_set(cache_key, result)
+        return result
