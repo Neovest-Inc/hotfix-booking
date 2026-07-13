@@ -76,6 +76,39 @@ class TestSaveBookings:
         assert loaded["bookings"][0]["originalParents"] == []
         assert loaded["bookings"][0]["rebaseHistory"] == []
 
+    def test_first_save_creates_no_backup(self, tmp_path: Path) -> None:
+        """First-ever save has nothing to back up; the .bak.N ring stays empty."""
+        f = tmp_path / "b.json"
+        save_bookings(f, {"bookings": []})
+        assert f.exists()
+        assert not (tmp_path / "b.json.bak.1").exists()
+
+    def test_second_save_creates_one_backup(self, tmp_path: Path) -> None:
+        f = tmp_path / "b.json"
+        save_bookings(f, {"bookings": [{"id": "V1"}]})
+        save_bookings(f, {"bookings": [{"id": "V2"}]})
+        assert (tmp_path / "b.json.bak.1").exists()
+        # .bak.1 holds the previous state (V1); the live file has V2.
+        import json as _json
+        assert _json.loads((tmp_path / "b.json.bak.1").read_text())["bookings"][0]["id"] == "V1"
+        assert _json.loads(f.read_text())["bookings"][0]["id"] == "V2"
+
+    def test_backup_ring_keeps_last_three(self, tmp_path: Path) -> None:
+        """After many saves we keep exactly the last 3 backups (bak.1..bak.3),
+        not the whole history — otherwise the folder grows unbounded."""
+        import json as _json
+        f = tmp_path / "b.json"
+        for i in range(6):
+            save_bookings(f, {"bookings": [{"id": f"V{i}"}]})
+        # Current file = V5 (the last write)
+        assert _json.loads(f.read_text())["bookings"][0]["id"] == "V5"
+        # bak.1 = V4 (most recent prior), bak.2 = V3, bak.3 = V2
+        assert _json.loads((tmp_path / "b.json.bak.1").read_text())["bookings"][0]["id"] == "V4"
+        assert _json.loads((tmp_path / "b.json.bak.2").read_text())["bookings"][0]["id"] == "V3"
+        assert _json.loads((tmp_path / "b.json.bak.3").read_text())["bookings"][0]["id"] == "V2"
+        # bak.4 must NOT exist — ring is bounded.
+        assert not (tmp_path / "b.json.bak.4").exists()
+
 
 class TestCreateBooking:
     def _mk(self):

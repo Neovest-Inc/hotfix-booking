@@ -131,12 +131,37 @@ def _normalize_and_backfill(bookings: list[dict]) -> None:
 
 
 def save_bookings(path: str | Path, data: BookingsData) -> None:
-    """Write with 2-space indent, atomically via temp-file + rename."""
+    """Write with 2-space indent, atomically via temp-file + rename.
+
+    Before writing, the current file (if any) is rotated into a small ring
+    of backups (`.bak.1` ... `.bak.3`) so a corrupted save or a bad manual
+    edit is undoable. `.bak.1` is always the most recent prior state.
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_backups(p, keep=3)
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(p)
+
+
+def _rotate_backups(p: Path, keep: int = 3) -> None:
+    """Shift `.bak.N-1` → `.bak.N` and copy the current file to `.bak.1`.
+
+    No-op if the current file doesn't exist yet (first-ever save). Silently
+    tolerates missing intermediate backups so a manually-deleted `.bak.2`
+    doesn't wedge the rotation.
+    """
+    if not p.exists() or keep < 1:
+        return
+    # Shift older backups down: .bak.(keep-1) → .bak.keep, then .bak.(keep-2) → .bak.(keep-1), etc.
+    for n in range(keep, 1, -1):
+        older = p.with_suffix(p.suffix + f".bak.{n - 1}")
+        newer = p.with_suffix(p.suffix + f".bak.{n}")
+        if older.exists():
+            older.replace(newer)
+    # Current file → .bak.1
+    p.replace(p.with_suffix(p.suffix + ".bak.1"))
 
 
 def default_id_factory() -> str:
