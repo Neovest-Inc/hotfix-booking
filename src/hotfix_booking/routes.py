@@ -20,7 +20,7 @@ from .history import (
     deployed_versions,
     merge_hotfixes,
 )
-from .jira_client import JiraClient
+from .jira_client import JiraClient, clear_cache as _clear_jira_cache
 from .matrix import build_version_matrix
 from .store import (
     AlreadyBookedError,
@@ -75,8 +75,11 @@ def _malformed_response() -> JSONResponse:
 @router.get("/field-options")
 async def field_options(
     request: Request,
+    fresh: bool = Query(default=False),
     _user: UserContext = Depends(require_user),
 ) -> Any:
+    if fresh:
+        _clear_jira_cache()
     try:
         async with _jira(request) as jira:
             components = await jira.fetch_components()
@@ -93,8 +96,11 @@ async def field_options(
 @router.get("/deployed-cms")
 async def deployed_cms(
     request: Request,
+    fresh: bool = Query(default=False),
     _user: UserContext = Depends(require_user),
 ) -> Any:
+    if fresh:
+        _clear_jira_cache()
     try:
         async with _jira(request) as jira:
             cms = await jira.fetch_deployed_cms(deployed_only=False)
@@ -112,6 +118,7 @@ async def next_version(
     request: Request,
     minor: int | None = Query(default=None),
     major: int | None = Query(default=None),
+    fresh: bool = Query(default=False),
     _user: UserContext = Depends(require_user),
 ) -> Any:
     """Compute the next available hotfix version.
@@ -128,6 +135,8 @@ async def next_version(
     """
     settings = get_settings()
     filter_requested = major is not None and minor is not None
+    if fresh:
+        _clear_jira_cache()
     try:
         async with _jira(request) as jira:
             # Fetch ALL recent CMs (any status) so the release dropdown
@@ -359,8 +368,11 @@ async def book(
 @router.get("/client-versions")
 async def client_versions(
     request: Request,
+    fresh: bool = Query(default=False),
     _user: UserContext = Depends(require_user),
 ) -> Any:
+    if fresh:
+        _clear_jira_cache()
     settings = get_settings()
     try:
         async with _jira(request) as jira:
@@ -393,10 +405,13 @@ async def history(
     request: Request,
     minor: int | None = Query(default=None),
     major: int | None = Query(default=None),
+    fresh: bool = Query(default=False),
     _user: UserContext = Depends(require_user),
 ) -> Any:
     settings = get_settings()
     filter_requested = major is not None and minor is not None
+    if fresh:
+        _clear_jira_cache()
     try:
         async with _jira(request) as jira:
             if filter_requested:

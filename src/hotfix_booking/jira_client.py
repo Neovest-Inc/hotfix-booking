@@ -49,7 +49,7 @@ _PAGE_SIZE = 100
 # Tests reset the cache between cases via the autouse `_reset_jira_cache`
 # fixture in tests/conftest.py — otherwise a mocked response from test A
 # would satisfy the cache for test B and hide real behavior.
-_CACHE_TTL_SECONDS = 30.0
+_CACHE_TTL_SECONDS = 10.0
 _cache: dict[tuple, tuple[float, Any]] = {}
 
 

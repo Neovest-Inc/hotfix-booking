@@ -254,12 +254,12 @@
 
     // Refresh matrix button
     if (refreshMatrixBtn) {
-      refreshMatrixBtn.addEventListener('click', loadVersionMatrix);
+      refreshMatrixBtn.addEventListener('click', () => loadVersionMatrix(true));
     }
 
     // Refresh history button
     if (refreshHistoryBtn) {
-      refreshHistoryBtn.addEventListener('click', () => loadHotfixHistory());
+      refreshHistoryBtn.addEventListener('click', () => loadHotfixHistory(null, true));
     }
 
     // Minor version select change
@@ -561,8 +561,11 @@
   function startBookAutoRefresh() {
     if (autoRefreshTimer) return;
     autoRefreshTimer = setInterval(() => {
-      loadNextVersion();
-      loadBookings();
+      // Auto-refresh explicitly asks the server for fresh Jira data (bypassing
+      // its 10s response cache) — the whole point is to catch changes made by
+      // someone else while this tab is idle.
+      loadNextVersion(true);
+      loadBookings(true);
     }, AUTO_REFRESH_MS);
   }
 
@@ -835,9 +838,10 @@
    * Also (on the first call) populates the release-selector dropdown from the
    * `minorVersions` list returned by the server.
    */
-  async function loadNextVersion() {
+  async function loadNextVersion(fresh = false) {
     try {
-      const url = releaseQueryString('/api/hotfix-booking/next-version');
+      let url = releaseQueryString('/api/hotfix-booking/next-version');
+      if (fresh) url = withFresh(url);
       const response = await fetch(url);
       const data = await response.json();
 
@@ -884,10 +888,11 @@
    * store. `renderMyHotfixes` then filters this down to just the current
    * user's. Only makes the call once we know which release to filter by.
    */
-  async function loadBookings() {
+  async function loadBookings(fresh = false) {
     if (selectedMinor === null || selectedMajor === null) return;
     try {
-      const url = releaseQueryString('/api/hotfix-booking/history');
+      let url = releaseQueryString('/api/hotfix-booking/history');
+      if (fresh) url = withFresh(url);
       const response = await fetch(url);
       const data = await response.json();
       renderedHotfixes = data.hotfixes || [];
@@ -923,6 +928,19 @@
     if (selectedMajor === null || selectedMinor === null) return url;
     const sep = url.includes('?') ? '&' : '?';
     return `${url}${sep}major=${selectedMajor}&minor=${selectedMinor}`;
+  }
+
+  /**
+   * Append `?fresh=1` to a URL — tells the server to bypass its 10-second
+   * Jira response cache and fetch straight from Jira. Used by:
+   *  - the explicit Refresh buttons on Matrix / History
+   *  - the 30-second Book auto-refresh loop
+   * Not used on the initial page-load fan-out (that's where the cache
+   * provides the most benefit — several endpoints share one Jira fetch).
+   */
+  function withFresh(url) {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}fresh=1`;
   }
 
   /**
@@ -1439,11 +1457,12 @@
   /**
    * Load version matrix
    */
-  async function loadVersionMatrix() {
+  async function loadVersionMatrix(fresh = false) {
     showMatrixLoading(true);
 
     try {
-      const response = await fetch('/api/hotfix-booking/client-versions');
+      const url = fresh ? withFresh('/api/hotfix-booking/client-versions') : '/api/hotfix-booking/client-versions';
+      const response = await fetch(url);
       const data = await response.json();
 
       if (data.error) {
@@ -1560,7 +1579,7 @@
    * Load hotfix history for a given release line.
    * @param {string|null} release - "major.minor" e.g. "9.97", or null for server default.
    */
-  async function loadHotfixHistory(release = null) {
+  async function loadHotfixHistory(release = null, fresh = false) {
     showHistoryLoading(true);
 
     try {
@@ -1571,6 +1590,7 @@
           url += `?major=${major}&minor=${minor}`;
         }
       }
+      if (fresh) url = withFresh(url);
 
       const response = await fetch(url);
       const data = await response.json();

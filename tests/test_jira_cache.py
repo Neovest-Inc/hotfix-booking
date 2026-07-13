@@ -133,8 +133,8 @@ async def test_ttl_expiry_forces_refetch(settings: Settings, monkeypatch) -> Non
         )
         async with JiraClient(settings) as jira:
             await jira.fetch_deployed_cms(deployed_only=True)  # miss at t=1000
-            fake_now[0] += 15.0                                  # t=1015 (< TTL)
+            fake_now[0] += 5.0                                   # t=1005 (< 10s TTL)
             await jira.fetch_deployed_cms(deployed_only=True)  # hit
-            fake_now[0] += 20.0                                  # t=1035 (> 30s TTL)
+            fake_now[0] += 20.0                                  # t=1025 (> 10s TTL)
             await jira.fetch_deployed_cms(deployed_only=True)  # miss again
         assert route.call_count == 2
