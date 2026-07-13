@@ -1,0 +1,48 @@
+name: tests
+
+# Run the full pytest suite on every push and PR to main.
+# All hermetic tests (mocked Jira, mocked Atlassian) — no real network
+# calls, no real credentials needed. Live-Jira canary tests are excluded.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    env:
+      # Fake values just to satisfy the startup guards in config.py + app.py.
+      # Nothing in the test suite actually talks to Atlassian or Jira — every
+      # HTTP call is mocked with respx.
+      SESSION_SECRET_KEY: ci-fake-secret-not-used-anywhere-real-${{ github.run_id }}
+      ATLASSIAN_CLIENT_ID: ci-fake-client-id
+      ATLASSIAN_CLIENT_SECRET: ci-fake-client-secret
+      APP_BASE_URL: http://localhost:3001
+      JIRA_BASE_URL: https://ci.jira.test
+      JIRA_EMAIL: ci@example.com
+      JIRA_API_TOKEN: ci-fake-token
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run pytest (hermetic only — skip live-Jira canary)
+        run: pytest -q -k "not live_fixtures"
