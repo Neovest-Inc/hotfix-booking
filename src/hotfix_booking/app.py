@@ -1,6 +1,7 @@
 """FastAPI app entry point."""
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,6 +11,7 @@ from starlette.types import Scope
 
 from .auth import router as auth_router
 from .config import get_settings
+from .jira_client import make_httpx_client
 from .routes import router
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
@@ -27,8 +29,23 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Open one shared httpx client for the whole app lifetime, close on
+    shutdown. Reused across every request — saves the ~50-100ms TLS handshake
+    that per-request clients would pay each time. Stored on `app.state.httpx_client`
+    so `routes._jira()` can hand it to each JiraClient instance."""
+    settings = get_settings()
+    app.state.httpx_client = make_httpx_client(settings)
+    try:
+        yield
+    finally:
+        await app.state.httpx_client.aclose()
+        app.state.httpx_client = None
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="HotFix Booking", version="0.1.0")
+    app = FastAPI(title="HotFix Booking", version="0.1.0", lifespan=_lifespan)
 
     settings = get_settings()
     if not settings.session_secret_key:

@@ -97,6 +97,28 @@ def _auth_header(settings: Settings) -> dict[str, str]:
     }
 
 
+def make_httpx_client(settings: Settings) -> httpx.AsyncClient:
+    """Build an httpx.AsyncClient pre-configured for Jira calls.
+
+    Callers must either manage the client's lifetime themselves (call
+    `aclose()` on shutdown) OR pass the resulting client to `JiraClient(...)`
+    which will honor a caller-owned client and NOT close it.
+
+    Used from two places:
+    - `app.py` lifespan: creates ONE client for the whole app lifetime,
+      reused across every request (avoids per-request TLS handshake, saves
+      ~50-100ms per Jira call).
+    - `JiraClient.__aenter__`: builds a per-instance client when none was
+      passed in (mainly for standalone / tool use — routes.py always uses
+      the persistent app-level client).
+    """
+    return httpx.AsyncClient(
+        base_url=settings.jira_base_url,
+        headers=_auth_header(settings),
+        timeout=30.0,
+    )
+
+
 def _issue_to_cm(issue: dict) -> dict:
     """Same shape mapping Node uses in fetchDeployedCMs/fetchCMsByVersion."""
     f = issue.get("fields", {}) or {}
@@ -127,11 +149,7 @@ class JiraClient:
 
     async def __aenter__(self) -> "JiraClient":
         if self._client is None:
-            self._client = httpx.AsyncClient(
-                base_url=self.settings.jira_base_url,
-                headers=_auth_header(self.settings),
-                timeout=30.0,
-            )
+            self._client = make_httpx_client(self.settings)
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:

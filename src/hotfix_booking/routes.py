@@ -43,12 +43,23 @@ router = APIRouter(prefix="/api/hotfix-booking")
 
 
 def _jira(request: Request) -> JiraClient:
-    """Build a JiraClient — tests may swap `request.app.state.jira_client_factory`."""
+    """Build a JiraClient bound to the app-lifetime httpx client.
+
+    Reusing the persistent client (created in `app._lifespan`) avoids the
+    per-request TLS handshake to Jira (~50-100ms/call). The JiraClient
+    context manager sees `_owns_client=False` when a client is passed in
+    and will NOT close it — the lifespan owns closing at shutdown.
+
+    Tests may override the client entirely via
+    `request.app.state.jira_client_factory` (unused at present but kept for
+    flexibility). Tests may also override `app.state.httpx_client` directly.
+    """
     settings = get_settings()
     factory = getattr(request.app.state, "jira_client_factory", None)
     if factory is not None:
         return factory(settings)
-    return JiraClient(settings)
+    shared = getattr(request.app.state, "httpx_client", None)
+    return JiraClient(settings, client=shared)
 
 
 def _malformed_response() -> JSONResponse:
