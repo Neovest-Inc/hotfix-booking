@@ -1,5 +1,7 @@
 # Hotfix Booking
 
+[![tests](https://github.com/Neovest-Inc/hotfix-booking/actions/workflows/test.yml/badge.svg)](https://github.com/Neovest-Inc/hotfix-booking/actions/workflows/test.yml)
+
 A small internal web app that helps the team coordinate hotfix releases across clients and components. It reads live data from Jira, shows it in three useful views, and lets you reserve the next available hotfix version number so two people don't accidentally pick the same one.
 
 ## Signing in
