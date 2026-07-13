@@ -43,6 +43,24 @@ def test_lifespan_closes_client_on_shutdown(settings: Settings) -> None:
     assert client.is_closed
 
 
+def test_httpx_client_has_retry_transport(settings: Settings) -> None:
+    """The persistent client must use a transport configured with retries.
+    Guards against a regression where someone drops the transport= kwarg
+    and Jira connection blips start surfacing as 500s to end users."""
+    from hotfix_booking.jira_client import make_httpx_client
+
+    client = make_httpx_client(settings)
+    try:
+        # httpx stores the transport on `_transport`. AsyncHTTPTransport with
+        # retries is exactly what we expect — a bare AsyncClient() would have
+        # a default transport with retries=0.
+        assert isinstance(client._transport, httpx.AsyncHTTPTransport)
+    finally:
+        # No async close needed for a not-yet-used client, but be tidy.
+        import asyncio
+        asyncio.run(client.aclose())
+
+
 def test_routes_reuse_the_lifespan_client(
     settings: Settings, mock_jira, monkeypatch,
 ) -> None:

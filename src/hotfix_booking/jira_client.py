@@ -111,11 +111,19 @@ def make_httpx_client(settings: Settings) -> httpx.AsyncClient:
     - `JiraClient.__aenter__`: builds a per-instance client when none was
       passed in (mainly for standalone / tool use — routes.py always uses
       the persistent app-level client).
+
+    Resilience: the transport retries twice on low-level connection errors
+    (dropped TCP, DNS blip, connection reset). Without this, a stale pooled
+    connection between the app and Jira could surface as a mysterious 500
+    to the user even though a simple retry would succeed. Retries only
+    apply to connection errors — 4xx/5xx responses from Jira are still
+    returned as-is so the app's own error handling stays in charge.
     """
     return httpx.AsyncClient(
         base_url=settings.jira_base_url,
         headers=_auth_header(settings),
         timeout=30.0,
+        transport=httpx.AsyncHTTPTransport(retries=2),
     )
 
 
