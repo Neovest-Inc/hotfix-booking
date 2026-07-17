@@ -5067,3 +5067,290 @@ a.apac-tag-fr:hover {
   background: #ef5350 !important;
   color: white !important;
 }
+
+/* ============================================================
+   Compare Environments View
+   ============================================================ */
+
+.hb-compare-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Top strip: env pickers + swap on the left, toolbar (diffs-only,
+   export, refresh) on the right. Wraps gracefully on narrow viewports. */
+.hb-cmp-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+}
+
+.hb-cmp-envs {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.hb-cmp-env-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hb-cmp-env-group label {
+  font-family: 'Google Sans', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  color: #5f6368;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.hb-cmp-env-select {
+  min-width: 220px;
+}
+
+.hb-cmp-swap-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  width: 38px;
+  border-radius: 50%;
+  border: 1px solid #dadce0;
+  background: #fff;
+  cursor: pointer;
+  color: #5f6368;
+  margin-bottom: 2px;
+  transition: all 0.15s ease;
+}
+.hb-cmp-swap-btn:hover {
+  color: #1a73e8;
+  border-color: #1a73e8;
+  background: #f0f5ff;
+}
+.hb-cmp-swap-btn .material-icons {
+  font-size: 20px;
+}
+
+.hb-cmp-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hb-cmp-diff-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Roboto', sans-serif;
+  font-size: 14px;
+  color: #202124;
+  cursor: pointer;
+  user-select: none;
+}
+.hb-cmp-diff-toggle input[type="checkbox"] {
+  cursor: pointer;
+}
+
+/* Small summary bar under the picker (X differences · Y in sync · Z one-sided). */
+.hb-cmp-summary {
+  display: flex;
+  gap: 20px;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: #5f6368;
+  font-family: 'Roboto', sans-serif;
+}
+.hb-cmp-summary-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.hb-cmp-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #dadce0;
+}
+.hb-cmp-dot--diff     { background: #f9ab00; }   /* amber */
+.hb-cmp-dot--sync     { background: #34a853; }   /* green */
+.hb-cmp-dot--onesided { background: #1a73e8; }   /* blue  */
+
+/* ----- Table ----- */
+.hb-compare-table-container {
+  width: 100%;
+}
+
+.hb-cmp-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-family: 'Roboto', sans-serif;
+  font-size: 13px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.hb-cmp-table thead th {
+  padding: 12px 14px;
+  background: #f1f3f4;
+  color: #202124;
+  font-family: 'Google Sans', sans-serif;
+  font-weight: 500;
+  text-align: left;
+  border-bottom: 1px solid #e0e0e0;
+  font-size: 13px;
+}
+.hb-cmp-th-component { width: 18%; }
+.hb-cmp-th-side      { width: 34%; }
+.hb-cmp-th-diff      { width: 14%; text-align: center; }
+
+.hb-cmp-table tbody td {
+  padding: 12px 14px;
+  vertical-align: top;
+  border-bottom: 1px solid #f0f0f0;
+}
+.hb-cmp-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.hb-cmp-td-component {
+  font-weight: 500;
+  color: #202124;
+}
+.hb-cmp-td-diff {
+  text-align: center;
+}
+.hb-cmp-empty {
+  color: #bdc1c6;
+  font-style: italic;
+}
+
+/* ----- Row coloring by diff kind ----- */
+.hb-cmp-row--equal        { background: #ffffff; }
+.hb-cmp-row--a-ahead      { background: #e6f4ea; }  /* green tint (A ahead) */
+.hb-cmp-row--b-ahead      { background: #fff4d5; }  /* amber tint (B ahead) */
+.hb-cmp-row--only-a,
+.hb-cmp-row--only-b       { background: #e8f0fe; }  /* blue tint (one-sided) */
+.hb-cmp-row--inflight-only { background: #fbeee7; } /* soft orange (only work in flight) */
+
+.hb-cmp-row:hover {
+  filter: brightness(0.98);
+}
+
+/* ----- Diff badge in the middle column ----- */
+.hb-cmp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: 'Roboto', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+.hb-cmp-badge .material-icons {
+  font-size: 16px;
+}
+.hb-cmp-badge--equal    { background: #f1f3f4; color: #5f6368; }
+.hb-cmp-badge--ahead-a  { background: #ceead6; color: #137333; border-color: #ceead6; }
+.hb-cmp-badge--ahead-b  { background: #feefc3; color: #b06000; border-color: #feefc3; }
+.hb-cmp-badge--onesided { background: #d2e3fc; color: #1967d2; }
+.hb-cmp-badge--inflight { background: #fce4ec; color: #c2185b; }
+
+/* ----- Chips inside a cell ----- */
+.hb-cmp-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hb-cmp-chip {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: #fff;
+  min-height: 42px;
+}
+.hb-cmp-chip--deployed {
+  background: #e6f4ea;
+  border-color: #ceead6;
+}
+.hb-cmp-chip--inflight {
+  background: #fff8e1;
+  border-color: #fde69e;
+  border-style: dashed;
+}
+.hb-cmp-chip--booked {
+  background: #e8f0fe;
+  border-color: #d2e3fc;
+  border-style: dashed;
+}
+
+.hb-cmp-chip-tag {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #5f6368;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.04);
+}
+.hb-cmp-chip--deployed .hb-cmp-chip-tag { color: #137333; background: rgba(19, 115, 51, 0.08); }
+.hb-cmp-chip--inflight .hb-cmp-chip-tag { color: #b06000; background: rgba(176, 96, 0, 0.08); }
+.hb-cmp-chip--booked   .hb-cmp-chip-tag { color: #1967d2; background: rgba(25, 103, 210, 0.08); }
+
+.hb-cmp-chip-version {
+  grid-column: 2;
+  grid-row: 1;
+  font-family: 'Google Sans', 'Roboto Mono', monospace;
+  font-weight: 600;
+  font-size: 14px;
+  color: #202124;
+}
+.hb-cmp-chip-meta {
+  grid-column: 1 / span 2;
+  grid-row: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #5f6368;
+}
+.hb-cmp-chip-status {
+  font-weight: 500;
+}
+.hb-cmp-chip-key {
+  color: #1a73e8;
+  text-decoration: none;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 11px;
+}
+.hb-cmp-chip-key:hover {
+  text-decoration: underline;
+}
+.hb-cmp-chip-when {
+  color: #80868b;
+}
+

@@ -20,6 +20,7 @@ from .history import (
     deployed_versions,
     merge_hotfixes,
 )
+from .compare import build_environments_compare
 from .jira_client import JiraClient, clear_cache as _clear_jira_cache
 from .matrix import build_version_matrix
 from .store import (
@@ -393,6 +394,52 @@ async def client_versions(
     # Expose the Jira base URL so the matrix in-flight chips can link CM
     # keys to their tickets, independent of whether the History view has
     # been visited this session.
+    result["jiraBaseUrl"] = settings.jira_base_url
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /environments-compare?envA=&envB=
+# ---------------------------------------------------------------------------
+@router.get("/environments-compare")
+async def environments_compare(
+    request: Request,
+    envA: str = Query(default="", min_length=0),
+    envB: str = Query(default="", min_length=0),
+    fresh: bool = Query(default=False),
+    _user: UserContext = Depends(require_user),
+) -> Any:
+    """Side-by-side compare of the latest hotfixes per component across two
+    client environments. Reuses the same 120-day CM window everything else
+    on the app pulls from, plus the local booking store."""
+    env_a = envA.strip()
+    env_b = envB.strip()
+    if not env_a or not env_b:
+        raise HTTPException(
+            status_code=400,
+            detail="Both 'envA' and 'envB' query params are required.",
+        )
+    if fresh:
+        _clear_jira_cache()
+    settings = get_settings()
+    try:
+        async with _jira(request) as jira:
+            cms = await jira.fetch_deployed_cms(deployed_only=False)
+    except Exception as e:  # noqa: BLE001
+        log.error("Environments compare (jira) error: %s", e)
+        return JSONResponse(
+            {"error": "Failed to fetch CMs from Jira"}, status_code=500
+        )
+
+    try:
+        bookings_data = load_bookings(settings.bookings_file)
+    except MalformedBookingsError:
+        return _malformed_response()
+
+    result = build_environments_compare(
+        cms, bookings_data.get("bookings", []), env_a, env_b
+    )
+    # Expose the Jira base URL so cell popovers can link CM keys to Jira.
     result["jiraBaseUrl"] = settings.jira_base_url
     return result
 

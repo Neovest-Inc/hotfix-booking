@@ -6,7 +6,7 @@
   <title>Hotfix Booking</title>
   <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=30">
+  <link rel="stylesheet" href="/styles.css?v=31">
   <style>
     /* Minimal shell overrides so the standalone page fills the viewport
        without depending on the dashboard's outer layout. */
@@ -154,6 +154,10 @@
         <span class="material-icons">grid_on</span>
         Version Matrix
       </button>
+      <button class="pill-btn" data-view="compare">
+        <span class="material-icons">compare_arrows</span>
+        Compare
+      </button>
       <button class="pill-btn" data-view="history">
         <span class="material-icons">history</span>
         Hotfix History
@@ -247,6 +251,46 @@
         </div>
       </div>
 
+      <!-- Compare Environments View -->
+      <div id="hbCompareView" class="hb-subview" style="display: none;">
+        <div id="hbCompareLoading" class="hb-loading" style="display: none;">
+          <div class="spinner"></div>
+          <p>Loading comparison...</p>
+        </div>
+        <div id="hbCompareContent" class="hb-compare-content">
+          <div class="hb-cmp-header">
+            <div class="hb-cmp-envs">
+              <div class="hb-cmp-env-group">
+                <label for="hbCompareEnvA">Environment A</label>
+                <select id="hbCompareEnvA" class="hb-select hb-cmp-env-select"></select>
+              </div>
+              <button id="hbCompareSwap" class="hb-cmp-swap-btn" type="button" title="Swap A and B">
+                <span class="material-icons">swap_horiz</span>
+              </button>
+              <div class="hb-cmp-env-group">
+                <label for="hbCompareEnvB">Environment B</label>
+                <select id="hbCompareEnvB" class="hb-select hb-cmp-env-select"></select>
+              </div>
+            </div>
+            <div class="hb-cmp-toolbar">
+              <label class="hb-cmp-diff-toggle">
+                <input type="checkbox" id="hbCompareDiffsOnly">
+                <span>Show differences only</span>
+              </label>
+              <button id="hbCompareExport" class="hb-refresh-btn hb-cmp-export-btn" type="button" title="Export the current comparison as CSV">
+                <span class="material-icons">download</span>
+                Export CSV
+              </button>
+              <button id="hbRefreshCompare" class="hb-refresh-btn" type="button">
+                <span class="material-icons">refresh</span>
+                Refresh
+              </button>
+            </div>
+          </div>
+          <div id="hbCompareTable" class="hb-compare-table-container"></div>
+        </div>
+      </div>
+
       <!-- Hotfix History View -->
       <div id="hbHistoryView" class="hb-subview" style="display: none;">
         <div id="hbHistoryLoading" class="hb-loading" style="display: none;">
@@ -271,7 +315,7 @@
   </main>
 
   <script src="/utils.js?v=10"></script>
-  <script src="/hotfix-booking.js?v=28"></script>
+  <script src="/hotfix-booking.js?v=29"></script>
   <script>
     // Standalone bootstrap. `boot()` checks /auth/me first — if unauthenticated
     // it shows the login gate; otherwise it runs init() + onTabShow().

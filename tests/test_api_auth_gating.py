@@ -17,6 +17,7 @@ PROTECTED_READS = [
     "/api/hotfix-booking/next-version",
     "/api/hotfix-booking/bookings",
     "/api/hotfix-booking/client-versions",
+    "/api/hotfix-booking/environments-compare",
     "/api/hotfix-booking/history",
 ]
 

@@ -27,8 +27,12 @@
   let userEmail = '';
   let userName = '';
   // Which of the three pill views was last active. Restored on load so a full
-  // page refresh keeps the user where they were (Book / Matrix / History).
+  // page refresh keeps the user where they were (Book / Matrix / Compare / History).
   const ACTIVE_VIEW_KEY = 'hotfixBooking.activeView';
+
+  // Compare tab — persist the last-used env pair so the tab reopens where
+  // the user left it. Stored as JSON: `{envA: string, envB: string}`.
+  const COMPARE_ENVS_KEY = 'hotfixBooking.compare.envs';
 
   // Show at most this many rows in the My Hotfixes feed. The release-line
   // dropdown separately shows the top 8 minor lines (see derive_minor_versions
@@ -47,9 +51,11 @@
   let bookView;
   let matrixView;
   let historyView;
+  let compareView;
   let loadingEl;
   let matrixLoadingEl;
   let historyLoadingEl;
+  let compareLoadingEl;
   let nextVersionEl;
   let componentToggle;
   let componentDropdown;
@@ -63,6 +69,17 @@
   let historyTableEl;
   let minorVersionSelect;
   let refreshHistoryBtn;
+  // Compare-view DOM refs (all inside #hbCompareView).
+  let compareEnvASelect;
+  let compareEnvBSelect;
+  let compareSwapBtn;
+  let compareDiffsOnlyChk;
+  let compareExportBtn;
+  let compareRefreshBtn;
+  let compareTableEl;
+  // Last fetched compare payload — cached so the "Show differences only"
+  // toggle can re-render without another network round trip.
+  let lastCompareData = null;
 
   // Pre-defined colors for components (consistent with CM table)
   const COMPONENT_COLORS = [
@@ -176,6 +193,15 @@
     historyTableEl = document.getElementById('hbHistoryTable');
     minorVersionSelect = document.getElementById('hbMinorVersionSelect');
     refreshHistoryBtn = document.getElementById('hbRefreshHistory');
+    compareView = document.getElementById('hbCompareView');
+    compareLoadingEl = document.getElementById('hbCompareLoading');
+    compareEnvASelect = document.getElementById('hbCompareEnvA');
+    compareEnvBSelect = document.getElementById('hbCompareEnvB');
+    compareSwapBtn = document.getElementById('hbCompareSwap');
+    compareDiffsOnlyChk = document.getElementById('hbCompareDiffsOnly');
+    compareExportBtn = document.getElementById('hbCompareExport');
+    compareRefreshBtn = document.getElementById('hbRefreshCompare');
+    compareTableEl = document.getElementById('hbCompareTable');
 
     if (!pillBtns.length) return;
 
@@ -269,6 +295,35 @@
       });
     }
 
+    // Compare view: env selects + swap + diffs-only toggle + export + refresh.
+    if (compareEnvASelect) {
+      compareEnvASelect.addEventListener('change', () => {
+        saveLastComparePair();
+        loadCompareView();
+      });
+    }
+    if (compareEnvBSelect) {
+      compareEnvBSelect.addEventListener('change', () => {
+        saveLastComparePair();
+        loadCompareView();
+      });
+    }
+    if (compareSwapBtn) {
+      compareSwapBtn.addEventListener('click', handleSwapEnvs);
+    }
+    if (compareDiffsOnlyChk) {
+      // Re-render the cached data client-side — no network trip needed.
+      compareDiffsOnlyChk.addEventListener('change', () => {
+        if (lastCompareData) renderCompareView(lastCompareData);
+      });
+    }
+    if (compareExportBtn) {
+      compareExportBtn.addEventListener('click', handleExportCompareCsv);
+    }
+    if (compareRefreshBtn) {
+      compareRefreshBtn.addEventListener('click', () => loadCompareView(true));
+    }
+
     // Book Hotfix: release-line selector (lets users book against previous minors
     // and previous majors, e.g. 9.99.x while 10.0.x is active).
     if (bookMinorSelect) {
@@ -293,7 +348,7 @@
     const storedView = (() => {
       try { return localStorage.getItem(ACTIVE_VIEW_KEY); } catch (_) { return null; }
     })();
-    if (storedView && storedView !== 'book' && ['matrix', 'history'].includes(storedView)) {
+    if (storedView && storedView !== 'book' && ['matrix', 'compare', 'history'].includes(storedView)) {
       setActiveView(storedView);
     }
 
@@ -301,16 +356,17 @@
   }
 
   /**
-   * Switch to one of the three pill views. Handles button state, view
+   * Switch to one of the four pill views. Handles button state, view
    * visibility, auto-refresh lifecycle, view-specific data loading, and
    * persistence to localStorage so a refresh keeps the user in place.
    */
   function setActiveView(view) {
-    if (!['book', 'matrix', 'history'].includes(view)) view = 'book';
+    if (!['book', 'matrix', 'compare', 'history'].includes(view)) view = 'book';
 
     pillBtns.forEach(b => b.classList.toggle('active', b.dataset.view === view));
     if (bookView) bookView.style.display = view === 'book' ? 'block' : 'none';
     if (matrixView) matrixView.style.display = view === 'matrix' ? 'block' : 'none';
+    if (compareView) compareView.style.display = view === 'compare' ? 'block' : 'none';
     if (historyView) historyView.style.display = view === 'history' ? 'block' : 'none';
 
     if (view === 'book') {
@@ -320,6 +376,8 @@
     }
     if (view === 'matrix') {
       loadVersionMatrix();
+    } else if (view === 'compare') {
+      onEnterCompareView();
     } else if (view === 'history') {
       loadHotfixHistory();
     }
@@ -1574,6 +1632,450 @@
     if (s.includes('open') || s.includes('to do') || s.includes('backlog') || s.includes('new')) return 'open';
     return 'default';
   }
+
+  // -------------------------------------------------------------------------
+  // Compare Environments view
+  // -------------------------------------------------------------------------
+  // Given the last 120 days of Jira CMs + local bookings, this view shows a
+  // component-by-component side-by-side of two client environments. Each cell
+  // stacks up to three chip kinds:
+  //   • deployed   — the highest-semver CM that actually shipped
+  //   • in-flight  — CMs currently moving through the workflow
+  //   • booked     — local bookings not yet in Jira
+  // Row color reflects the DEPLOYED delta (green = A ahead, amber = B ahead,
+  // grey = equal, blue = only one side has anything). The "Show differences
+  // only" checkbox hides equal rows.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Called every time the Compare view becomes active. Ensures the env
+   * dropdowns are populated, restores the last-used pair from localStorage,
+   * and kicks off a fetch (only if both envs are chosen).
+   */
+  async function onEnterCompareView() {
+    // Env dropdowns share the client list with /field-options.
+    if (!fieldOptionsLoaded) {
+      await loadFieldOptions();
+    }
+    populateCompareEnvSelects();
+    restoreLastComparePair();
+    // If both selects have values, load. Otherwise show a friendly prompt.
+    if (compareEnvASelect && compareEnvBSelect && compareEnvASelect.value && compareEnvBSelect.value) {
+      loadCompareView();
+    } else if (compareTableEl) {
+      compareTableEl.innerHTML = '<p class="hb-no-data">Pick two environments above to compare.</p>';
+    }
+  }
+
+  /**
+   * Fill both env <select>s from the shared clients list. Preserves any
+   * currently-selected value if it's still in the list.
+   */
+  function populateCompareEnvSelects() {
+    if (!compareEnvASelect || !compareEnvBSelect) return;
+    const prevA = compareEnvASelect.value;
+    const prevB = compareEnvBSelect.value;
+    const options = availableClients
+      .map(c => `<option value="${Utils.escapeHtml(c.value)}">${Utils.escapeHtml(c.value)}</option>`)
+      .join('');
+    // The first <option> stays as a placeholder so a fresh user sees "Choose an environment"
+    // instead of silently picking the first env alphabetically.
+    const placeholder = '<option value="" disabled>Choose an environment…</option>';
+    compareEnvASelect.innerHTML = placeholder + options;
+    compareEnvBSelect.innerHTML = placeholder + options;
+    // Restore whichever previous value is still valid.
+    if (prevA && availableClients.some(c => c.value === prevA)) {
+      compareEnvASelect.value = prevA;
+    } else {
+      compareEnvASelect.value = '';
+    }
+    if (prevB && availableClients.some(c => c.value === prevB)) {
+      compareEnvBSelect.value = prevB;
+    } else {
+      compareEnvBSelect.value = '';
+    }
+  }
+
+  function restoreLastComparePair() {
+    if (!compareEnvASelect || !compareEnvBSelect) return;
+    // Only fall back to storage if the selects have no current value.
+    if (compareEnvASelect.value && compareEnvBSelect.value) return;
+    let stored;
+    try { stored = JSON.parse(localStorage.getItem(COMPARE_ENVS_KEY) || 'null'); }
+    catch (_) { stored = null; }
+    if (!stored) return;
+    if (stored.envA && availableClients.some(c => c.value === stored.envA)) {
+      compareEnvASelect.value = stored.envA;
+    }
+    if (stored.envB && availableClients.some(c => c.value === stored.envB)) {
+      compareEnvBSelect.value = stored.envB;
+    }
+  }
+
+  function saveLastComparePair() {
+    if (!compareEnvASelect || !compareEnvBSelect) return;
+    const payload = { envA: compareEnvASelect.value, envB: compareEnvBSelect.value };
+    try { localStorage.setItem(COMPARE_ENVS_KEY, JSON.stringify(payload)); }
+    catch (_) { /* quota — ignore */ }
+  }
+
+  function handleSwapEnvs() {
+    if (!compareEnvASelect || !compareEnvBSelect) return;
+    const a = compareEnvASelect.value;
+    const b = compareEnvBSelect.value;
+    compareEnvASelect.value = b;
+    compareEnvBSelect.value = a;
+    saveLastComparePair();
+    if (a && b) loadCompareView();
+  }
+
+  async function loadCompareView(fresh = false) {
+    if (!compareTableEl) return;
+    const envA = compareEnvASelect ? compareEnvASelect.value : '';
+    const envB = compareEnvBSelect ? compareEnvBSelect.value : '';
+    if (!envA || !envB) {
+      compareTableEl.innerHTML = '<p class="hb-no-data">Pick two environments above to compare.</p>';
+      return;
+    }
+    showCompareLoading(true);
+    try {
+      const params = new URLSearchParams({ envA, envB });
+      if (fresh) params.set('fresh', '1');
+      const url = `/api/hotfix-booking/environments-compare?${params.toString()}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data.error) {
+        compareTableEl.innerHTML = `<p class="hb-error">Error: ${Utils.escapeHtml(data.error)}</p>`;
+        return;
+      }
+      if (data.jiraBaseUrl) jiraBaseUrl = data.jiraBaseUrl;
+      lastCompareData = data;
+      renderCompareView(data);
+    } catch (err) {
+      console.error('Failed to load compare view:', err);
+      compareTableEl.innerHTML = '<p class="hb-error">Failed to load comparison.</p>';
+    } finally {
+      showCompareLoading(false);
+    }
+  }
+
+  function showCompareLoading(show) {
+    if (compareLoadingEl) compareLoadingEl.style.display = show ? 'flex' : 'none';
+    if (compareTableEl) compareTableEl.style.display = show ? 'none' : 'block';
+  }
+
+  /**
+   * Split a semver "X.Y.Z" into a comparable [X, Y, Z] tuple. Returns null
+   * for anything that isn't a valid triplet.
+   */
+  function parseSemverParts(v) {
+    if (!v || typeof v !== 'string') return null;
+    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
+    return m ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : null;
+  }
+
+  /** semver compare: returns +1 if a > b, -1 if a < b, 0 if equal or unparseable. */
+  function compareSemver(a, b) {
+    const pa = parseSemverParts(a);
+    const pb = parseSemverParts(b);
+    if (!pa || !pb) return 0;
+    for (let i = 0; i < 3; i++) {
+      if (pa[i] > pb[i]) return 1;
+      if (pa[i] < pb[i]) return -1;
+    }
+    return 0;
+  }
+
+  /**
+   * Classify one row for coloring.
+   *   - 'equal'         → both sides shipped the same version (or both empty)
+   *   - 'a-ahead'       → both deployed, envA higher
+   *   - 'b-ahead'       → both deployed, envB higher
+   *   - 'only-a'        → envA has any bucket, envB is completely empty
+   *   - 'only-b'        → envB has any bucket, envA is completely empty
+   *   - 'inflight-only' → neither side is deployed but at least one has
+   *                       in-flight or booked work (informational)
+   */
+  function classifyRow(row) {
+    const a = row.a || {};
+    const b = row.b || {};
+    const aEmpty = !a.deployed && !(a.inflight || []).length && !(a.booked || []).length;
+    const bEmpty = !b.deployed && !(b.inflight || []).length && !(b.booked || []).length;
+    if (aEmpty && bEmpty) return 'equal';
+    if (aEmpty) return 'only-b';
+    if (bEmpty) return 'only-a';
+    const va = a.deployed && a.deployed.version;
+    const vb = b.deployed && b.deployed.version;
+    if (!va && !vb) return 'inflight-only';
+    if (va && !vb) return 'only-a';
+    if (!va && vb) return 'only-b';
+    const cmp = compareSemver(va, vb);
+    if (cmp > 0) return 'a-ahead';
+    if (cmp < 0) return 'b-ahead';
+    return 'equal';
+  }
+
+  function renderCompareView(data) {
+    if (!compareTableEl) return;
+    const envA = data.envA || '';
+    const envB = data.envB || '';
+    const diffsOnly = !!(compareDiffsOnlyChk && compareDiffsOnlyChk.checked);
+
+    const rows = (data.rows || []).map(r => ({ row: r, kind: classifyRow(r) }));
+    const filtered = diffsOnly ? rows.filter(r => r.kind !== 'equal') : rows;
+
+    if (rows.length === 0) {
+      compareTableEl.innerHTML = `
+        <p class="hb-no-data">No hotfixes touch either environment in the last 120 days.</p>
+      `;
+      return;
+    }
+    if (filtered.length === 0) {
+      compareTableEl.innerHTML = `
+        <p class="hb-no-data">The two environments are in sync on every component.
+        Untick "Show differences only" to see the full list.</p>
+      `;
+      return;
+    }
+
+    // Summary strip: X differences • Y in sync • Z one-sided.
+    const summary = summarizeRows(rows);
+    let html = `
+      <div class="hb-cmp-summary">
+        <span class="hb-cmp-summary-item hb-cmp-summary-item--diff">
+          <span class="hb-cmp-dot hb-cmp-dot--diff"></span>
+          ${summary.diff} differences
+        </span>
+        <span class="hb-cmp-summary-item hb-cmp-summary-item--sync">
+          <span class="hb-cmp-dot hb-cmp-dot--sync"></span>
+          ${summary.equal} in sync
+        </span>
+        <span class="hb-cmp-summary-item hb-cmp-summary-item--onesided">
+          <span class="hb-cmp-dot hb-cmp-dot--onesided"></span>
+          ${summary.oneSided} one-sided
+        </span>
+      </div>
+    `;
+
+    html += `
+      <table class="hb-cmp-table">
+        <thead>
+          <tr>
+            <th class="hb-cmp-th-component">Component</th>
+            <th class="hb-cmp-th-side">${Utils.escapeHtml(envA)}</th>
+            <th class="hb-cmp-th-diff">Δ</th>
+            <th class="hb-cmp-th-side">${Utils.escapeHtml(envB)}</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+    filtered.forEach(({ row, kind }) => {
+      html += `
+        <tr class="hb-cmp-row hb-cmp-row--${kind}">
+          <td class="hb-cmp-td-component">${Utils.escapeHtml(row.component)}</td>
+          <td class="hb-cmp-td-cell">${renderCompareCell(row.a)}</td>
+          <td class="hb-cmp-td-diff">${renderDiffBadge(kind, row)}</td>
+          <td class="hb-cmp-td-cell">${renderCompareCell(row.b)}</td>
+        </tr>
+      `;
+    });
+    html += '</tbody></table>';
+    compareTableEl.innerHTML = html;
+  }
+
+  function summarizeRows(rows) {
+    const s = { diff: 0, equal: 0, oneSided: 0 };
+    rows.forEach(({ kind }) => {
+      if (kind === 'equal') s.equal += 1;
+      else if (kind === 'a-ahead' || kind === 'b-ahead' || kind === 'inflight-only') s.diff += 1;
+      else if (kind === 'only-a' || kind === 'only-b') s.oneSided += 1;
+    });
+    return s;
+  }
+
+  /** Build the small badge in the middle Δ column. */
+  function renderDiffBadge(kind, row) {
+    const a = row.a || {};
+    const b = row.b || {};
+    const va = a.deployed && a.deployed.version ? a.deployed.version : null;
+    const vb = b.deployed && b.deployed.version ? b.deployed.version : null;
+    if (kind === 'equal') {
+      return va ? `<span class="hb-cmp-badge hb-cmp-badge--equal">= ${Utils.escapeHtml(va)}</span>`
+                : '<span class="hb-cmp-badge hb-cmp-badge--equal">no data</span>';
+    }
+    if (kind === 'a-ahead') {
+      return `<span class="hb-cmp-badge hb-cmp-badge--ahead-a" title="Env A is ahead">
+        <span class="material-icons">arrow_back</span>
+        ${Utils.escapeHtml(va || '?')} vs ${Utils.escapeHtml(vb || '—')}
+      </span>`;
+    }
+    if (kind === 'b-ahead') {
+      return `<span class="hb-cmp-badge hb-cmp-badge--ahead-b" title="Env B is ahead">
+        ${Utils.escapeHtml(va || '—')} vs ${Utils.escapeHtml(vb || '?')}
+        <span class="material-icons">arrow_forward</span>
+      </span>`;
+    }
+    if (kind === 'only-a') {
+      return '<span class="hb-cmp-badge hb-cmp-badge--onesided">A only</span>';
+    }
+    if (kind === 'only-b') {
+      return '<span class="hb-cmp-badge hb-cmp-badge--onesided">B only</span>';
+    }
+    // inflight-only: neither side deployed, but there's activity somewhere.
+    return '<span class="hb-cmp-badge hb-cmp-badge--inflight">in flight</span>';
+  }
+
+  /** Render one cell's chip stack (deployed on top, then in-flight, then booked). */
+  function renderCompareCell(cell) {
+    cell = cell || {};
+    const parts = [];
+    if (cell.deployed) {
+      parts.push(renderChip('deployed', cell.deployed));
+    }
+    (cell.inflight || []).forEach(item => parts.push(renderChip('inflight', item)));
+    (cell.booked || []).forEach(item => parts.push(renderChip('booked', item)));
+    if (parts.length === 0) return '<span class="hb-cmp-empty">—</span>';
+    return `<div class="hb-cmp-chips">${parts.join('')}</div>`;
+  }
+
+  function renderChip(kind, item) {
+    if (kind === 'deployed') {
+      const v = Utils.escapeHtml(item.version || '?');
+      const cm = item.cmKey ? Utils.escapeHtml(item.cmKey) : '';
+      const cmLink = cm && jiraBaseUrl
+        ? `<a class="hb-cmp-chip-key" href="${jiraBaseUrl}/browse/${cm}" target="_blank" rel="noopener noreferrer" title="Open ${cm} in Jira">${cm}</a>`
+        : (cm ? `<span class="hb-cmp-chip-key">${cm}</span>` : '');
+      const when = item.deployedAt ? Utils.escapeHtml(formatDate(item.deployedAt)) : '';
+      const meta = [cmLink, when && `<span class="hb-cmp-chip-when">${when}</span>`]
+        .filter(Boolean).join(' ');
+      return `
+        <div class="hb-cmp-chip hb-cmp-chip--deployed" title="Deployed ${when || ''}">
+          <span class="hb-cmp-chip-tag">deployed</span>
+          <span class="hb-cmp-chip-version">${v}</span>
+          ${meta ? `<span class="hb-cmp-chip-meta">${meta}</span>` : ''}
+        </div>
+      `;
+    }
+    if (kind === 'inflight') {
+      const v = Utils.escapeHtml(item.version || '?');
+      const status = Utils.escapeHtml(item.status || 'Unknown');
+      const cat = statusCategory(item.status);
+      const cm = item.cmKey ? Utils.escapeHtml(item.cmKey) : '';
+      const cmLink = cm && jiraBaseUrl
+        ? `<a class="hb-cmp-chip-key" href="${jiraBaseUrl}/browse/${cm}" target="_blank" rel="noopener noreferrer" title="Open ${cm} in Jira">${cm}</a>`
+        : (cm ? `<span class="hb-cmp-chip-key">${cm}</span>` : '');
+      return `
+        <div class="hb-cmp-chip hb-cmp-chip--inflight hb-status-${cat}" title="${status}">
+          <span class="hb-cmp-chip-tag">in flight</span>
+          <span class="hb-cmp-chip-version">${v}</span>
+          <span class="hb-cmp-chip-meta">
+            <span class="hb-cmp-chip-status">${status}</span>
+            ${cmLink}
+          </span>
+        </div>
+      `;
+    }
+    // booked
+    const v = Utils.escapeHtml(item.version || '?');
+    const by = item.bookedBy ? Utils.escapeHtml(item.bookedBy) : '';
+    const when = item.bookedAt ? Utils.escapeHtml(formatDate(item.bookedAt)) : '';
+    const meta = [by, when].filter(Boolean).join(' · ');
+    return `
+      <div class="hb-cmp-chip hb-cmp-chip--booked" title="Booked ${when}">
+        <span class="hb-cmp-chip-tag">booked</span>
+        <span class="hb-cmp-chip-version">${v}</span>
+        ${meta ? `<span class="hb-cmp-chip-meta">${meta}</span>` : ''}
+      </div>
+    `;
+  }
+
+  /**
+   * Export the currently-visible comparison as a CSV file. Respects the
+   * "Show differences only" toggle. One row per component; buckets are
+   * pipe-separated within a cell so the file stays flat.
+   */
+  function handleExportCompareCsv() {
+    if (!lastCompareData) return;
+    const envA = lastCompareData.envA || 'A';
+    const envB = lastCompareData.envB || 'B';
+    const diffsOnly = !!(compareDiffsOnlyChk && compareDiffsOnlyChk.checked);
+    const rows = (lastCompareData.rows || []).map(r => ({ row: r, kind: classifyRow(r) }));
+    const filtered = diffsOnly ? rows.filter(r => r.kind !== 'equal') : rows;
+
+    const header = [
+      'Component',
+      `${envA} deployed`,
+      `${envA} in-flight`,
+      `${envA} booked`,
+      `${envB} deployed`,
+      `${envB} in-flight`,
+      `${envB} booked`,
+      'Diff',
+    ];
+    const lines = [header.map(csvEscape).join(',')];
+    filtered.forEach(({ row, kind }) => {
+      lines.push([
+        row.component,
+        cellSummaryDeployed(row.a),
+        cellSummaryInflight(row.a),
+        cellSummaryBooked(row.a),
+        cellSummaryDeployed(row.b),
+        cellSummaryInflight(row.b),
+        cellSummaryBooked(row.b),
+        kindLabel(kind),
+      ].map(csvEscape).join(','));
+    });
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    // Filesystem-safe env names for the download filename.
+    const stampEnv = s => (s || '').replace(/[^a-z0-9._-]+/gi, '_').replace(/^_|_$/g, '');
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.download = `hotfix-compare_${stampEnv(envA)}_vs_${stampEnv(envB)}_${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function cellSummaryDeployed(cell) {
+    if (!cell || !cell.deployed) return '';
+    const parts = [cell.deployed.version];
+    if (cell.deployed.cmKey) parts.push(cell.deployed.cmKey);
+    if (cell.deployed.deployedAt) parts.push(cell.deployed.deployedAt);
+    return parts.filter(Boolean).join(' ');
+  }
+  function cellSummaryInflight(cell) {
+    if (!cell || !(cell.inflight || []).length) return '';
+    return cell.inflight.map(i =>
+      [i.version, i.status, i.cmKey].filter(Boolean).join(' ')
+    ).join(' | ');
+  }
+  function cellSummaryBooked(cell) {
+    if (!cell || !(cell.booked || []).length) return '';
+    return cell.booked.map(b =>
+      [b.version, b.bookedBy, b.bookedAt].filter(Boolean).join(' ')
+    ).join(' | ');
+  }
+  function kindLabel(kind) {
+    switch (kind) {
+      case 'equal': return 'equal';
+      case 'a-ahead': return 'A ahead';
+      case 'b-ahead': return 'B ahead';
+      case 'only-a': return 'A only';
+      case 'only-b': return 'B only';
+      case 'inflight-only': return 'in flight';
+      default: return kind;
+    }
+  }
+  function csvEscape(v) {
+    const s = v == null ? '' : String(v);
+    // Wrap in quotes if there's a comma, quote, or newline. Escape internal quotes.
+    if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  }
+
 
   /**
    * Load hotfix history for a given release line.
