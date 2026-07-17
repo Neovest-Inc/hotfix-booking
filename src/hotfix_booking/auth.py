@@ -138,7 +138,39 @@ async def callback(
     if not code or not state or not expected_state or not secrets.compare_digest(
         state, expected_state
     ):
-        raise HTTPException(status_code=400, detail="Invalid OAuth callback")
+        # Identify which of the four sub-conditions tripped. Log it AND put
+        # it in the response body — none of these reasons meaningfully help
+        # an attacker (state is 43 random chars; knowing "no session cookie"
+        # doesn't let them forge one without SESSION_SECRET_KEY), and it
+        # saves the user a trip to the server logs when something breaks.
+        if not code:
+            reason = "missing_code"
+            hint = "Atlassian did not include a 'code' query param on the callback. This usually means the OAuth app in the Atlassian developer console is misconfigured."
+        elif not state:
+            reason = "missing_state"
+            hint = "Atlassian did not echo the 'state' query param back. Very unusual — retry once; if it persists, check the Atlassian OAuth app settings."
+        elif not expected_state:
+            reason = "no_session_state"
+            hint = (
+                "The browser did not send the hb_session cookie that /login set. "
+                "Common causes: (a) the callback opened in a different browser or "
+                "profile than the one you started login from; (b) cookies for "
+                "localhost are blocked; (c) SESSION_SECRET_KEY was rotated mid-flow; "
+                "(d) the browser cleared cookies between /login and /callback. "
+                "Fix: close all tabs, clear cookies for localhost:3001, then click Log in again in ONE browser window."
+            )
+        else:
+            reason = "state_mismatch"
+            hint = (
+                "The state cookie doesn't match the state Atlassian returned. "
+                "Usually caused by starting login twice in different tabs — only "
+                "the most recent /login's state is valid. Close extra tabs and try again."
+            )
+        log.warning("OAuth callback rejected: %s", reason)
+        raise HTTPException(
+            status_code=400,
+            detail={"error": reason, "hint": hint},
+        )
 
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as http:

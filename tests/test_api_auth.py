@@ -154,6 +154,11 @@ def test_callback_missing_state_returns_400(anon_client: TestClient) -> None:
         follow_redirects=False,
     )
     assert r.status_code == 400
+    # Diagnostic contract: response body carries a machine-readable reason code
+    # + a human hint so PMs debugging a broken login don't need to open logs.
+    body = r.json()
+    assert body["detail"]["error"] == "missing_state"
+    assert "hint" in body["detail"]
 
 
 def test_callback_missing_code_returns_400(anon_client: TestClient) -> None:
@@ -163,6 +168,7 @@ def test_callback_missing_code_returns_400(anon_client: TestClient) -> None:
         follow_redirects=False,
     )
     assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "missing_code"
 
 
 def test_callback_state_mismatch_returns_400(anon_client: TestClient) -> None:
@@ -172,6 +178,7 @@ def test_callback_state_mismatch_returns_400(anon_client: TestClient) -> None:
         follow_redirects=False,
     )
     assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "state_mismatch"
 
 
 def test_callback_without_prior_login_returns_400(anon_client: TestClient) -> None:
@@ -181,6 +188,11 @@ def test_callback_without_prior_login_returns_400(anon_client: TestClient) -> No
         follow_redirects=False,
     )
     assert r.status_code == 400
+    # This is the most common real-world failure mode (see auth.py). Assert
+    # the reason so a regression that swallows it back to a generic message
+    # trips the suite immediately.
+    assert r.json()["detail"]["error"] == "no_session_state"
+    assert "hb_session" in r.json()["detail"]["hint"]
 
 
 def test_callback_token_exchange_failure_returns_502(anon_client: TestClient) -> None:
