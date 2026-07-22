@@ -153,9 +153,17 @@
     if (err) {
       const errorEl = document.getElementById('hbLoginError');
       if (errorEl) {
-        const msg = err === 'access_denied'
-          ? 'Sign-in was cancelled. Click below to try again.'
-          : `Sign-in failed (${err}). Click below to try again.`;
+        let msg;
+        if (err === 'access_denied') {
+          msg = 'Sign-in was cancelled. Click below to try again.';
+        } else if (err === 'session_lost') {
+          // Server self-heal path: /callback didn't get the hb_session cookie
+          // back. Usually a stale/dropped cookie — clicking Log in again sets
+          // a fresh one and typically works on the second try.
+          msg = 'Your sign-in session was lost before it completed. This can happen if cookies were cleared or a different browser opened the callback. Click below to try again.';
+        } else {
+          msg = `Sign-in failed (${err}). Click below to try again.`;
+        }
         errorEl.textContent = msg;
         errorEl.style.display = 'block';
       }

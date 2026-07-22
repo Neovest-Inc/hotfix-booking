@@ -3,8 +3,14 @@
 Standard authorization-code grant, identity-only:
 
 1. GET /login           — 302s to auth.atlassian.com/authorize with a
-                          fresh, per-session random `state`.
-2. GET /callback        — verifies state, exchanges the code at
+                          server-signed `state` token (itsdangerous, bound
+                          to SESSION_SECRET_KEY, 5-min TTL) that carries the
+                          nonce + return_to. Nothing is stored server-side
+                          and no cookie is written — the whole flow is
+                          cookie-independent so it survives any browser
+                          policy or extension that drops cookies on the
+                          Atlassian → localhost redirect.
+2. GET /callback        — verifies the signed state, exchanges the code at
                           auth.atlassian.com/oauth/token for an access
                           token, then calls api.atlassian.com/me to get
                           {email, name, account_id}. Stores it in the
@@ -13,6 +19,17 @@ Standard authorization-code grant, identity-only:
                           again.
 3. GET /me              — returns the current session's user or 401.
 4. POST /logout         — clears the session.
+
+Why signed-state instead of session-cookie state? The previous design
+stored `oauth_state` in the session cookie and popped it on /callback. In
+practice, PM users kept hitting `no_session_state` errors after coming
+back to the app days later — the hb_session cookie set by /login didn't
+survive the Atlassian round-trip (browser policy quirks, stale duplicate
+cookies, cross-profile navigation, etc.). Signed state (as recommended by
+OAuth 2.0 RFC 6749 §10.12 for CSRF protection) makes the entire OAuth
+flow stateless from the server's perspective. Replay protection comes
+from two independent mechanisms: the itsdangerous 5-minute timestamp AND
+Atlassian invalidating the `code` after first use (RFC 6749 §10.5).
 
 Nothing about this module touches Jira. Jira API access continues to
 use the shared JIRA_API_TOKEN. OAuth here is purely for identity.
@@ -27,6 +44,7 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from .config import get_settings
 
@@ -38,6 +56,16 @@ _AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 _TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 _ME_URL = "https://api.atlassian.com/me"
 _HTTP_TIMEOUT = 10.0
+
+# The OAuth `state` token expires after this many seconds. Users have to
+# complete the Atlassian consent flow within the window — 5 minutes is
+# generous for the click-Log-in-and-approve interaction. Also acts as an
+# upper bound on replay attempts (Atlassian's one-shot code is the primary
+# replay guard).
+_STATE_MAX_AGE_SECONDS = 300
+# `salt` scopes this signer's signatures so a token minted for OAuth state
+# can't be reused as a token for any future itsdangerous usage in the app.
+_STATE_SALT = "oauth-state-v1"
 
 
 @dataclass(frozen=True)
@@ -85,19 +113,41 @@ def _safe_return_to(candidate: str | None) -> str:
     return candidate
 
 
+def _state_serializer() -> URLSafeTimedSerializer:
+    """Signer for the OAuth `state` parameter.
+
+    Bound to `SESSION_SECRET_KEY`, so states signed by this process can only
+    be verified by a process holding the same secret. Rotating the secret
+    invalidates any in-flight logins — harmless, the user just retries.
+
+    Called per-request rather than cached at import time so tests that
+    override `SESSION_SECRET_KEY` via `reset_settings_for_tests` see the
+    new secret. In prod this is a single-digit-microsecond object build.
+    """
+    return URLSafeTimedSerializer(
+        get_settings().session_secret_key, salt=_STATE_SALT
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /login
 # ---------------------------------------------------------------------------
 @router.get("/login")
-async def login(
-    request: Request, return_to: str = Query(default="/")
-) -> RedirectResponse:
+async def login(return_to: str = Query(default="/")) -> RedirectResponse:
     settings = get_settings()
-    state = secrets.token_urlsafe(32)
-    # Stored in the signed session cookie — the browser can't tamper with it.
-    # `pop` in /callback makes this one-shot (no replay).
-    request.session["oauth_state"] = state
-    request.session["oauth_return_to"] = _safe_return_to(return_to)
+    # Pack the nonce + return_to into a signed, time-bounded token that
+    # Atlassian will echo back on /callback. Because the token is signed
+    # with our own SESSION_SECRET_KEY, no server-side storage — and no
+    # session cookie — is needed to verify it later. This is the OAuth
+    # 2.0 spec-recommended way to do stateless CSRF protection (RFC 6749
+    # §10.12) and it makes the flow immune to browsers dropping the
+    # hb_session cookie on the Atlassian → localhost redirect.
+    state = _state_serializer().dumps(
+        {
+            "nonce": secrets.token_urlsafe(16),
+            "return_to": _safe_return_to(return_to),
+        }
+    )
 
     params = {
         "audience": "api.atlassian.com",
@@ -123,9 +173,6 @@ async def callback(
     error_description: str | None = Query(default=None),
 ) -> RedirectResponse:
     settings = get_settings()
-    # Pop both up-front so the state is consumed even on error paths — no replay.
-    expected_state = request.session.pop("oauth_state", None)
-    return_to = request.session.pop("oauth_return_to", "/") or "/"
 
     # User rejected the Atlassian consent screen (or Atlassian returned an
     # error). Redirect back to the login gate rather than raising a raw 400 —
@@ -135,42 +182,63 @@ async def callback(
         log.info("Atlassian OAuth returned error=%s (%s)", error, error_description)
         return RedirectResponse(url=f"/?auth_error={error}", status_code=302)
 
-    if not code or not state or not expected_state or not secrets.compare_digest(
-        state, expected_state
-    ):
-        # Identify which of the four sub-conditions tripped. Log it AND put
-        # it in the response body — none of these reasons meaningfully help
-        # an attacker (state is 43 random chars; knowing "no session cookie"
-        # doesn't let them forge one without SESSION_SECRET_KEY), and it
-        # saves the user a trip to the server logs when something breaks.
-        if not code:
-            reason = "missing_code"
-            hint = "Atlassian did not include a 'code' query param on the callback. This usually means the OAuth app in the Atlassian developer console is misconfigured."
-        elif not state:
-            reason = "missing_state"
-            hint = "Atlassian did not echo the 'state' query param back. Very unusual — retry once; if it persists, check the Atlassian OAuth app settings."
-        elif not expected_state:
-            reason = "no_session_state"
-            hint = (
-                "The browser did not send the hb_session cookie that /login set. "
-                "Common causes: (a) the callback opened in a different browser or "
-                "profile than the one you started login from; (b) cookies for "
-                "localhost are blocked; (c) SESSION_SECRET_KEY was rotated mid-flow; "
-                "(d) the browser cleared cookies between /login and /callback. "
-                "Fix: close all tabs, clear cookies for localhost:3001, then click Log in again in ONE browser window."
-            )
-        else:
-            reason = "state_mismatch"
-            hint = (
-                "The state cookie doesn't match the state Atlassian returned. "
-                "Usually caused by starting login twice in different tabs — only "
-                "the most recent /login's state is valid. Close extra tabs and try again."
-            )
-        log.warning("OAuth callback rejected: %s", reason)
+    # `missing_code` and `missing_state` are Atlassian / OAuth-app config
+    # bugs, not something the end user can recover by retrying — keep them
+    # as 400 so misconfigurations surface loudly in monitoring.
+    if not code:
+        log.warning("OAuth callback rejected: missing_code")
         raise HTTPException(
             status_code=400,
-            detail={"error": reason, "hint": hint},
+            detail={
+                "error": "missing_code",
+                "hint": (
+                    "Atlassian did not include a 'code' query param on the "
+                    "callback. This usually means the OAuth app in the "
+                    "Atlassian developer console is misconfigured."
+                ),
+            },
         )
+    if not state:
+        log.warning("OAuth callback rejected: missing_state")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "missing_state",
+                "hint": (
+                    "Atlassian did not echo the 'state' query param back. "
+                    "Very unusual — retry once; if it persists, check the "
+                    "Atlassian OAuth app settings."
+                ),
+            },
+        )
+
+    # Verify the state token. Failure modes:
+    # - `SignatureExpired`: user took >5 min to complete Atlassian consent,
+    #   or resurfaced an old tab. Recoverable — restart the flow.
+    # - `BadSignature`: state was tampered with, signed by a rotated secret,
+    #   or (most likely) is simply a random string an attacker sent to
+    #   `/callback` directly. Also recoverable via a fresh /login.
+    # In either case we redirect to the login gate rather than raising a
+    # scary JSON error — this is the same self-heal UX PMs kept hitting
+    # under the old cookie-based design.
+    try:
+        payload = _state_serializer().loads(
+            state, max_age=_STATE_MAX_AGE_SECONDS
+        )
+    except SignatureExpired:
+        log.info("OAuth callback rejected: state token expired")
+        return RedirectResponse(url="/?auth_error=session_lost", status_code=302)
+    except BadSignature:
+        log.warning(
+            "OAuth callback rejected: bad state signature "
+            "(state was not issued by this server or was tampered with)"
+        )
+        return RedirectResponse(url="/?auth_error=session_lost", status_code=302)
+
+    # `payload` is trusted (signature verified) — safe to read return_to.
+    # Belt-and-suspenders `_safe_return_to` in case a future signer bug
+    # lets an unsafe value slip through.
+    return_to = _safe_return_to(payload.get("return_to"))
 
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as http:

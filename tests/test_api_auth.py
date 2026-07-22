@@ -60,10 +60,13 @@ def test_login_redirects_to_atlassian_authorize_url(anon_client: TestClient) -> 
     assert len(q["state"][0]) >= 32
 
 
-def test_login_state_is_stored_in_session(anon_client: TestClient) -> None:
+def test_login_does_not_set_session_cookie(anon_client: TestClient) -> None:
+    """Regression guard for the signed-state design: /login must NOT rely on
+    a session cookie surviving the Atlassian round-trip. The OAuth `state`
+    parameter is a self-contained signed token — nothing is stored server-
+    side, and the hb_session cookie is only written on successful callback."""
     _kickoff_login(anon_client)
-    # After /login the client should carry an hb_session cookie
-    assert "hb_session" in anon_client.cookies
+    assert "hb_session" not in anon_client.cookies
 
 
 def test_login_accepts_return_to_query_param(anon_client: TestClient) -> None:
@@ -171,28 +174,105 @@ def test_callback_missing_code_returns_400(anon_client: TestClient) -> None:
     assert r.json()["detail"]["error"] == "missing_code"
 
 
-def test_callback_state_mismatch_returns_400(anon_client: TestClient) -> None:
+def test_callback_with_forged_state_redirects_to_login_gate(
+    anon_client: TestClient,
+) -> None:
+    """An unsigned/random `state` value fails signature verification and
+    self-heals to the login gate. This covers three real-world scenarios
+    that all look identical to the server: (a) an attacker crafting a
+    callback URL from scratch, (b) a state left over from a rotated
+    SESSION_SECRET_KEY, (c) any random string in the state param."""
     _kickoff_login(anon_client)
     r = anon_client.get(
-        "/api/hotfix-booking/auth/callback?code=abc&state=not-the-right-state",
+        "/api/hotfix-booking/auth/callback?code=abc&state=not-a-signed-state",
         follow_redirects=False,
     )
-    assert r.status_code == 400
-    assert r.json()["detail"]["error"] == "state_mismatch"
+    assert r.status_code == 302
+    assert r.headers["location"] == "/?auth_error=session_lost"
 
 
-def test_callback_without_prior_login_returns_400(anon_client: TestClient) -> None:
-    """No session state cookie at all — attacker crafting a callback URL."""
+def test_callback_without_prior_login_redirects_to_login_gate(
+    anon_client: TestClient,
+) -> None:
+    """A random unsigned state (no prior /login on this browser) fails
+    signature verification. This is the most common real-world failure —
+    it covers a user hitting /callback directly, an attacker crafting a
+    URL, and a state left over from a rotated SESSION_SECRET_KEY. Always
+    self-heal by redirecting to the login gate rather than showing a raw
+    400 JSON blob that a PM has to decipher."""
     r = anon_client.get(
         "/api/hotfix-booking/auth/callback?code=abc&state=anything",
         follow_redirects=False,
     )
-    assert r.status_code == 400
-    # This is the most common real-world failure mode (see auth.py). Assert
-    # the reason so a regression that swallows it back to a generic message
-    # trips the suite immediately.
-    assert r.json()["detail"]["error"] == "no_session_state"
-    assert "hb_session" in r.json()["detail"]["hint"]
+    assert r.status_code == 302
+    assert r.headers["location"] == "/?auth_error=session_lost"
+
+
+def test_callback_state_signed_with_wrong_secret_redirects(
+    anon_client: TestClient, settings
+) -> None:
+    """Regression guard for SESSION_SECRET_KEY rotation: a state signed by a
+    different secret must NOT be accepted. Simulates an attacker who knows
+    our state format but not our secret."""
+    from itsdangerous import URLSafeTimedSerializer
+
+    forged_signer = URLSafeTimedSerializer(
+        "definitely-not-the-real-secret" + "x" * 40, salt="oauth-state-v1"
+    )
+    forged_state = forged_signer.dumps({"nonce": "forged", "return_to": "/"})
+
+    r = anon_client.get(
+        f"/api/hotfix-booking/auth/callback?code=abc&state={forged_state}",
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert r.headers["location"] == "/?auth_error=session_lost"
+
+
+def test_callback_state_signed_with_wrong_salt_redirects(
+    anon_client: TestClient, settings
+) -> None:
+    """The itsdangerous `salt` scopes signatures to a specific use. If a
+    future itsdangerous usage in the app (e.g. a password-reset token)
+    were to leak a token, that token must NOT be usable as an OAuth state."""
+    from itsdangerous import URLSafeTimedSerializer
+
+    # Same secret, DIFFERENT salt — signatures should not cross-verify.
+    cross_purpose_signer = URLSafeTimedSerializer(
+        settings.session_secret_key, salt="different-purpose"
+    )
+    cross_state = cross_purpose_signer.dumps({"nonce": "n", "return_to": "/"})
+
+    r = anon_client.get(
+        f"/api/hotfix-booking/auth/callback?code=abc&state={cross_state}",
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert r.headers["location"] == "/?auth_error=session_lost"
+
+
+def test_callback_state_expires_after_5_minutes(
+    anon_client: TestClient, settings, monkeypatch
+) -> None:
+    """The signed state has a 5-minute TTL (upper bound on how long a user
+    can take to complete Atlassian consent, and defense-in-depth against
+    replay). An expired state must be rejected \u2014 verified by patching
+    itsdangerous' internal clock to simulate the passage of time."""
+    import time as _time
+
+    state = _kickoff_login(anon_client)
+
+    # Fast-forward `time.time()` by 6 minutes for itsdangerous' age check.
+    # Patch on the module itsdangerous.timed imports from.
+    real_time = _time.time
+    monkeypatch.setattr(_time, "time", lambda: real_time() + 6 * 60)
+
+    r = anon_client.get(
+        f"/api/hotfix-booking/auth/callback?code=abc&state={state}",
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert r.headers["location"] == "/?auth_error=session_lost"
 
 
 def test_callback_token_exchange_failure_returns_502(anon_client: TestClient) -> None:
@@ -225,9 +305,61 @@ def test_callback_me_call_failure_returns_502(anon_client: TestClient) -> None:
     assert r.status_code == 502
 
 
-def test_callback_state_is_consumed_after_use(anon_client: TestClient) -> None:
-    """State + return_to must be one-shot to prevent replay."""
+def test_callback_state_replay_relies_on_atlassian_one_shot_code(
+    anon_client: TestClient,
+) -> None:
+    """With the signed-state design our `state` is stateless (nothing stored
+    server-side), so replay protection is delegated to Atlassian: RFC 6749
+    §10.5 requires the authorization server to invalidate the `code` after
+    first use. This test simulates that guarantee — first call succeeds,
+    second call with the same (code, state) pair gets `invalid_grant` back
+    from Atlassian and surfaces as a 502.
+
+    (Belt-and-suspenders: the itsdangerous signer also stamps the state
+    with a 5-minute TTL, so even if Atlassian's replay guard were somehow
+    bypassed, a stale state can only be reused for at most 5 minutes.)"""
     state = _kickoff_login(anon_client)
+    with respx.mock(assert_all_called=False) as mock:
+        token_route = mock.post(TOKEN_URL)
+        # First call succeeds, second call fails — mirror Atlassian's one-shot code.
+        token_route.side_effect = [
+            Response(
+                200,
+                json={"access_token": "t", "expires_in": 3600, "scope": "read:me"},
+            ),
+            Response(400, json={"error": "invalid_grant"}),
+        ]
+        mock.get(ME_URL).mock(return_value=Response(200, json=_ME_PAYLOAD))
+
+        r1 = anon_client.get(
+            f"/api/hotfix-booking/auth/callback?code=abc&state={state}",
+            follow_redirects=False,
+        )
+        assert r1.status_code == 302
+        r2 = anon_client.get(
+            f"/api/hotfix-booking/auth/callback?code=abc&state={state}",
+            follow_redirects=False,
+        )
+        assert r2.status_code == 502
+
+
+def test_callback_succeeds_when_browser_dropped_the_session_cookie(
+    anon_client: TestClient,
+) -> None:
+    """Regression guard for the recurring UX bug PMs kept hitting: browser
+    drops the hb_session cookie between /login and /callback (Chrome cookie
+    policy, extensions, cross-profile navigation, etc.), and the user is
+    left staring at a JSON error page. Under the signed-state design, the
+    OAuth `state` parameter is self-contained (signed with SESSION_SECRET_KEY)
+    so /callback can verify it without ANY cookie surviving the round-trip.
+
+    Simulates the failure mode by clearing all cookies between /login and
+    /callback — under the old cookie-based design this would trip
+    `no_session_state`; under the new design it just works."""
+    state = _kickoff_login(anon_client)
+    # Simulate the browser dropping the cookie mid-flow.
+    anon_client.cookies.clear()
+
     with respx.mock(assert_all_called=False) as mock:
         mock.post(TOKEN_URL).mock(
             return_value=Response(
@@ -236,20 +368,20 @@ def test_callback_state_is_consumed_after_use(anon_client: TestClient) -> None:
             )
         )
         mock.get(ME_URL).mock(return_value=Response(200, json=_ME_PAYLOAD))
-
-        # First use — succeeds
-        r1 = anon_client.get(
+        r = anon_client.get(
             f"/api/hotfix-booking/auth/callback?code=abc&state={state}",
             follow_redirects=False,
         )
-        assert r1.status_code == 302
-
-        # Second use with the same state — must fail (state was consumed)
-        r2 = anon_client.get(
-            f"/api/hotfix-booking/auth/callback?code=abc&state={state}",
-            follow_redirects=False,
-        )
-        assert r2.status_code == 400
+    assert r.status_code == 302, (
+        f"Expected 302 (login succeeded despite dropped cookie) but got "
+        f"{r.status_code}: {r.text[:200]}"
+    )
+    assert r.headers["location"] == "/"
+    # And the user is now properly logged in — the session cookie is set
+    # freshly on this successful callback response.
+    me = anon_client.get("/api/hotfix-booking/auth/me")
+    assert me.status_code == 200
+    assert me.json()["email"] == "antonios@neovest.com"
 
 
 # ---------------------------------------------------------------------------
@@ -333,27 +465,22 @@ def test_callback_with_atlassian_error_redirects_to_login_gate(
     assert r.headers["location"] == "/?auth_error=access_denied"
 
 
-def test_callback_with_atlassian_error_still_consumes_state(
+def test_callback_with_atlassian_error_ignores_state(
     anon_client: TestClient,
 ) -> None:
-    """Even on the error path, any stored `oauth_state` must be cleared so a
-    later replay of a stale code can't hijack the session."""
-    # Prime the session with a state.
+    """On Atlassian's error path (user declined consent, etc.) we short-circuit
+    to the login gate before touching the state token. This mirrors the old
+    'consume state on error' behavior in spirit — no code path uses an
+    error-branch state to gain access — but under the stateless design there
+    is no server-side state to consume; the guarantee comes from the state
+    being cryptographically signed rather than session-scoped."""
     _kickoff_login(anon_client)
-    assert "hb_session" in anon_client.cookies
-    # Atlassian error path — should still clear the state.
     r = anon_client.get(
         "/api/hotfix-booking/auth/callback?error=access_denied&state=whatever",
         follow_redirects=False,
     )
     assert r.status_code == 302
-    # A subsequent legitimate callback attempt with the original state must
-    # now fail (state was consumed on the error redirect).
-    r2 = anon_client.get(
-        "/api/hotfix-booking/auth/callback?code=x&state=whatever",
-        follow_redirects=False,
-    )
-    assert r2.status_code == 400
+    assert r.headers["location"] == "/?auth_error=access_denied"
 
 
 # ---------------------------------------------------------------------------
