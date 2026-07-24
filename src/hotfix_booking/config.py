@@ -27,6 +27,10 @@ class Settings:
     atlassian_client_secret: str = ""
     session_secret_key: str = ""
     session_max_age_days: int = 365
+    # Feature flag — hides the Compare tab in the UI until we're ready to
+    # ship it. Flipped on by setting HB_COMPARE_ENABLED=true (or 1/yes/on)
+    # in .env. Safe default is False so the tab never accidentally ships.
+    compare_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -62,6 +66,8 @@ class Settings:
             atlassian_client_secret=os.getenv("ATLASSIAN_CLIENT_SECRET", "").strip(),
             session_secret_key=os.getenv("SESSION_SECRET_KEY", "").strip(),
             session_max_age_days=int(os.getenv("SESSION_MAX_AGE_DAYS", "365")),
+            compare_enabled=os.getenv("HB_COMPARE_ENABLED", "").strip().lower()
+            in ("1", "true", "yes", "on"),
         )
 
 

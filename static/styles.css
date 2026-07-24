@@ -248,6 +248,86 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Global "requests in flight" indicator. A thin bar pinned to the top of
+   the viewport that fades in whenever the fetch wrapper reports at least
+   one pending request and fades out when everything settles. Purely visual
+   — no per-call-site code needed. */
+.hb-top-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 10000;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.hb-top-progress.hb-progress-active {
+  opacity: 1;
+}
+.hb-top-progress::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, #1a73e8, transparent);
+  animation: hbProgressSlide 1.4s ease-in-out infinite;
+}
+@keyframes hbProgressSlide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+/* Inline mini-spinner for buttons and modals — 18px, matches the color
+   pattern of the big .spinner but at button-icon size. */
+.hb-mini-spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #e8eaed;
+  border-top-color: #1a73e8;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  vertical-align: middle;
+}
+
+/* Modal in-flight state for the Cancel confirm modal. Replaces the button
+   row with a centered spinner + wait message so it's visually obvious the
+   server is working and the user shouldn't retry. */
+.hb-cancel-busy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px 8px 16px;
+  color: #5f6368;
+  font-size: 14px;
+  text-align: center;
+}
+.hb-cancel-busy .hb-mini-spinner {
+  width: 36px;
+  height: 36px;
+  border-width: 3px;
+}
+.hb-cancel-busy p {
+  margin: 0;
+  line-height: 1.5;
+}
+.hb-cancel-busy strong {
+  color: #202124;
+}
+
+/* Refresh-button "working" state — rotates the icon while the underlying
+   fetch is in flight. Applied by JS via `classList.add('hb-btn-refreshing')`. */
+.hb-btn-refreshing .material-icons {
+  animation: spin 0.9s linear infinite;
+}
+
 .loading p {
   margin-top: 16px;
   color: #5f6368;

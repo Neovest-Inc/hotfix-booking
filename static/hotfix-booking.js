@@ -4,6 +4,38 @@
  * Handles hotfix version booking and version matrix display.
  */
 (function() {
+  // ---------------------------------------------------------------------
+  // Global fetch wrapper — drives the #hbTopProgress bar so users always
+  // have visual feedback that the app is busy. The bar fades in on the
+  // first in-flight request and fades out when the count hits zero. Every
+  // `fetch(...)` call inside this IIFE resolves to THIS function (not the
+  // global) because it's declared in the enclosing scope.
+  //
+  // Deliberately transparent: same signature and return value as the real
+  // fetch, so no call site needs to know about the wrapper.
+  // ---------------------------------------------------------------------
+  const _rawFetch = window.fetch.bind(window);
+  let _inflight = 0;
+  function _updateTopProgress() {
+    const bar = document.getElementById('hbTopProgress');
+    if (!bar) return;
+    if (_inflight > 0) {
+      bar.classList.add('hb-progress-active');
+    } else {
+      bar.classList.remove('hb-progress-active');
+    }
+  }
+  async function fetch(...args) {
+    _inflight++;
+    _updateTopProgress();
+    try {
+      return await _rawFetch(...args);
+    } finally {
+      _inflight--;
+      _updateTopProgress();
+    }
+  }
+
   // State
   let initialized = false;
   let fieldOptionsLoaded = false;
@@ -26,6 +58,10 @@
   // after successful Atlassian OAuth login. Empty until then.
   let userEmail = '';
   let userName = '';
+  // Feature flags — populated by `boot()` from GET /api/hotfix-booking/features
+  // after auth. Default `false` so the Compare tab stays hidden if the fetch
+  // fails; ops flips it on via HB_COMPARE_ENABLED=true in .env.
+  let compareEnabled = false;
   // Which of the three pill views was last active. Restored on load so a full
   // page refresh keeps the user where they were (Book / Matrix / Compare / History).
   const ACTIVE_VIEW_KEY = 'hotfixBooking.activeView';
@@ -129,6 +165,18 @@
     }
     userEmail = me.email || '';
     userName = me.displayName || me.email || '';
+    // Feature flags. Best-effort — if the endpoint fails we leave the
+    // defaults in place (compareEnabled=false → tab stays hidden). Runs
+    // in parallel with the UI reveal below to avoid an extra visible delay.
+    try {
+      const fr = await fetch('/api/hotfix-booking/features');
+      if (fr.status === 200) {
+        const flags = await fr.json();
+        compareEnabled = !!flags.compareEnabled;
+      }
+    } catch (e) {
+      console.warn('Failed to load /features, using defaults:', e);
+    }
     // Auth OK — reveal the app UI (was hidden via `hidden` attribute in the
     // HTML to prevent a flash of authenticated content on cold load).
     const header = document.querySelector('.app-header');
@@ -213,6 +261,19 @@
 
     if (!pillBtns.length) return;
 
+    // Hide the Compare pill button when the feature flag is off. Kept off by
+    // default until Product signs off — flipped on via HB_COMPARE_ENABLED=true
+    // in .env. We hide the button rather than removing it so a later flip
+    // just needs a page reload, not a redeploy. `style.display = 'none'` is
+    // used instead of the `hidden` attribute because `.pill-btn` has
+    // `display: flex` in styles.css, which overrides the user-agent
+    // `hidden` rule.
+    if (!compareEnabled) {
+      pillBtns.forEach(btn => {
+        if (btn.dataset.view === 'compare') btn.style.display = 'none';
+      });
+    }
+
     // Pill toggle event listeners
     pillBtns.forEach(btn => {
       btn.addEventListener('click', () => {
@@ -288,12 +349,16 @@
 
     // Refresh matrix button
     if (refreshMatrixBtn) {
-      refreshMatrixBtn.addEventListener('click', () => loadVersionMatrix(true));
+      refreshMatrixBtn.addEventListener('click', () =>
+        withRefreshing(refreshMatrixBtn, () => loadVersionMatrix(true))
+      );
     }
 
     // Refresh history button
     if (refreshHistoryBtn) {
-      refreshHistoryBtn.addEventListener('click', () => loadHotfixHistory(null, true));
+      refreshHistoryBtn.addEventListener('click', () =>
+        withRefreshing(refreshHistoryBtn, () => loadHotfixHistory(null, true))
+      );
     }
 
     // Minor version select change
@@ -329,7 +394,9 @@
       compareExportBtn.addEventListener('click', handleExportCompareCsv);
     }
     if (compareRefreshBtn) {
-      compareRefreshBtn.addEventListener('click', () => loadCompareView(true));
+      compareRefreshBtn.addEventListener('click', () =>
+        withRefreshing(compareRefreshBtn, () => loadCompareView(true))
+      );
     }
 
     // Book Hotfix: release-line selector (lets users book against previous minors
@@ -353,11 +420,18 @@
 
     // Restore the last-active pill view from localStorage. Book is the default
     // fallback — matches the HTML's `pill-btn active` marker on the Book button.
+    // If the stored view is `compare` but the flag is off (e.g. user visited
+    // during a preview window), drop back to Book so they don't land on a
+    // hidden tab.
     const storedView = (() => {
       try { return localStorage.getItem(ACTIVE_VIEW_KEY); } catch (_) { return null; }
     })();
     if (storedView && storedView !== 'book' && ['matrix', 'compare', 'history'].includes(storedView)) {
-      setActiveView(storedView);
+      if (storedView === 'compare' && !compareEnabled) {
+        setActiveView('book');
+      } else {
+        setActiveView(storedView);
+      }
     }
 
     initialized = true;
@@ -370,6 +444,10 @@
    */
   function setActiveView(view) {
     if (!['book', 'matrix', 'compare', 'history'].includes(view)) view = 'book';
+    // Belt-and-suspenders: if someone somehow triggers Compare while the
+    // flag is off (e.g. an old bookmark or programmatic call), coerce to
+    // Book so the UI never sits on a hidden tab.
+    if (view === 'compare' && !compareEnabled) view = 'book';
 
     pillBtns.forEach(b => b.classList.toggle('active', b.dataset.view === view));
     if (bookView) bookView.style.display = view === 'book' ? 'block' : 'none';
@@ -2263,6 +2341,25 @@
   }
 
   /**
+   * Run an async function with a refresh button in its "working" state —
+   * disables the button and spins its Material icon via a CSS class until
+   * the promise settles. Errors are surfaced by the underlying loader
+   * (which owns its own toast + error rendering); this helper just handles
+   * the visual state so users get clear "I'm working" feedback on click.
+   */
+  async function withRefreshing(btn, fn) {
+    if (!btn) return fn();
+    btn.classList.add('hb-btn-refreshing');
+    btn.disabled = true;
+    try {
+      return await fn();
+    } finally {
+      btn.classList.remove('hb-btn-refreshing');
+      btn.disabled = false;
+    }
+  }
+
+  /**
    * Format an ISO timestamp for display in Eastern Time (ET).
    * Used for `bookedAt` in the Recent Bookings feed.
    */
@@ -2425,10 +2522,23 @@
   }
 
   async function performCancel(bookingId, version, overlay) {
-    const confirmBtn = overlay.querySelector('#hbCancelConfirm');
-    if (confirmBtn) {
-      confirmBtn.disabled = true;
-      confirmBtn.textContent = 'Cancelling…';
+    const body = overlay.querySelector('#hbCancelBody');
+    // Snapshot the pre-cancel body so we can restore it on error (lets the
+    // user retry without re-opening the modal).
+    const originalBody = body ? body.innerHTML : '';
+    // Swap the whole modal body to a busy state — big centered spinner +
+    // "Cancelling…" message. This is the fix for the "app looks frozen"
+    // feedback: users kept staring at a static confirm button, weren't
+    // sure work was happening, and clicked things they shouldn't have.
+    if (body) {
+      body.innerHTML = `
+        <div class="hb-cancel-busy">
+          <span class="hb-mini-spinner" aria-hidden="true"></span>
+          <p><strong>Cancelling ${Utils.escapeHtml(version)}…</strong></p>
+          <p>This can take a few seconds while we rebase downstream bookings
+             and notify Teams. Please don't refresh the page.</p>
+        </div>
+      `;
     }
     try {
       const resp = await fetch('/api/hotfix-booking/cancel', {
@@ -2440,9 +2550,13 @@
       const data = await resp.json();
       if (!resp.ok) {
         Utils.showToast(data.error || 'Failed to cancel booking', 'error');
-        if (confirmBtn) {
-          confirmBtn.disabled = false;
-          confirmBtn.textContent = `Cancel ${version}`;
+        // Restore the original confirm body so the user can retry or bail.
+        if (body) {
+          body.innerHTML = originalBody;
+          const keepBtn2 = overlay.querySelector('#hbCancelKeep');
+          const confirmBtn2 = overlay.querySelector('#hbCancelConfirm');
+          if (keepBtn2) keepBtn2.addEventListener('click', () => { overlay.style.display = 'none'; });
+          if (confirmBtn2) confirmBtn2.addEventListener('click', () => performCancel(bookingId, version, overlay));
         }
         return;
       }
@@ -2456,9 +2570,12 @@
     } catch (err) {
       console.error('Cancel failed:', err);
       Utils.showToast('Failed to cancel booking', 'error');
-      if (confirmBtn) {
-        confirmBtn.disabled = false;
-        confirmBtn.textContent = `Cancel ${version}`;
+      if (body) {
+        body.innerHTML = originalBody;
+        const keepBtn2 = overlay.querySelector('#hbCancelKeep');
+        const confirmBtn2 = overlay.querySelector('#hbCancelConfirm');
+        if (keepBtn2) keepBtn2.addEventListener('click', () => { overlay.style.display = 'none'; });
+        if (confirmBtn2) confirmBtn2.addEventListener('click', () => performCancel(bookingId, version, overlay));
       }
     }
   }

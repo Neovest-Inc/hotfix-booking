@@ -42,7 +42,8 @@ src/hotfix_booking/
                     CLIENT_CONTEXT_ID, PORT, BOOKING_RETENTION_DAYS,
                     ADMIN_EMAILS, TEAMS_TARGET, TEAMS_WEBHOOK_URL_<NAME>,
                     APP_BASE_URL, ATLASSIAN_CLIENT_ID/SECRET,
-                    SESSION_SECRET_KEY, SESSION_MAX_AGE_DAYS)
+                    SESSION_SECRET_KEY, SESSION_MAX_AGE_DAYS,
+                    HB_COMPARE_ENABLED)
   jira_client.py    httpx wrapper for the 3 Jira endpoint families we use
                     at runtime (search-jql, project components,
                     custom-field options)
@@ -136,6 +137,7 @@ frontend can detect "not logged in").
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET  | `/features`        | Feature flags read on page load by the front-end. Currently returns `{compareEnabled: bool}`, controlled by `HB_COMPARE_ENABLED` in `.env` (default `false` — Compare tab hidden). |
 | GET  | `/field-options`   | Components + client envs (from Jira) |
 | GET  | `/deployed-cms`    | All CMs from the last 120 days (paginated across all Jira pages up to a 15-page / 1500-CM safety cap) |
 | GET  | `/next-version` `?major=&minor=` | Next available hotfix version for the given release line (or current if omitted). Response also includes `currentMajor`, `currentMinor`, and up to 8 `minorVersions` for the release dropdown. **Auto-cleanup side effect** (deploy- + age-based). Uses `deployed_only=False` so newly-opened release lines with no deploys yet (e.g. brand-new 9.98.x) appear in the dropdown. |

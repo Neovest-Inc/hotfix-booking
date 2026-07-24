@@ -71,6 +71,21 @@ def _malformed_response() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# GET /features
+# ---------------------------------------------------------------------------
+@router.get("/features")
+async def features(_user: UserContext = Depends(require_user)) -> dict:
+    """Feature flags read on page load by the front-end.
+
+    Currently just controls whether the Compare tab is shown. Auth-gated
+    to match every other /api/hotfix-booking/* endpoint (flags aren't
+    secret but the app is behind login anyway).
+    """
+    settings = get_settings()
+    return {"compareEnabled": settings.compare_enabled}
+
+
+# ---------------------------------------------------------------------------
 # GET /field-options
 # ---------------------------------------------------------------------------
 @router.get("/field-options")
